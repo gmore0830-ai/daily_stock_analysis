@@ -549,54 +549,16 @@ jobs:
           echo "=========================================="
           echo ""
           
-          # 自動清理 Telegram Token 與 Chat ID（去除頭尾空白、換行，以及誤加的開頭 bot 字樣）
-          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
-            export TELEGRAM_BOT_TOKEN="$(printf '%s' "$TELEGRAM_BOT_TOKEN" | tr -d '[:space:]' | sed 's/^bot//i')"
-          fi
-          if [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-            export TELEGRAM_CHAT_ID="$(printf '%s' "$TELEGRAM_CHAT_ID" | tr -d '[:space:]')"
-          fi
+          # 1. 暫存並隱藏 TG 與 Email 變數，避免 main.py 內建推播寄出簡體信或用大盤長文洗版 TG
+          REAL_TG_TOKEN="$(printf '%s' "${TELEGRAM_BOT_TOKEN:-}" | tr -d '[:space:]' | sed 's/^bot//i')"
+          REAL_TG_CHAT_ID="$(printf '%s' "${TELEGRAM_CHAT_ID:-}" | tr -d '[:space:]')"
+          REAL_EMAIL_SENDER="$(printf '%s' "${EMAIL_SENDER:-}" | tr -d '[:space:]')"
+          REAL_EMAIL_PASSWORD="$(printf '%s' "${EMAIL_PASSWORD:-}" | tr -d '[:space:]')"
+          REAL_EMAIL_RECEIVERS="${EMAIL_RECEIVERS:-}"
+          unset TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID EMAIL_SENDER EMAIL_PASSWORD EMAIL_RECEIVERS
 
-          # 啟用台灣繁體中文（s2twp）自動轉換（模板 + Telegram/Webhook 推播攔截轉換）
-          python - << 'EOF'
-          import glob, os
-          from opencc import OpenCC
-          cc = OpenCC('s2twp')
-
-          for path in glob.glob('templates/**/*.*', recursive=True):
-              if os.path.isfile(path):
-                  try:
-                      with open(path, 'r', encoding='utf-8') as f:
-                          content = f.read()
-                      with open(path, 'w', encoding='utf-8') as f:
-                          f.write(cc.convert(content))
-                  except Exception:
-                      pass
-
-          with open('sitecustomize.py', 'w', encoding='utf-8') as f:
-              f.write('''import requests
-          try:
-              from opencc import OpenCC
-              _cc = OpenCC('s2twp')
-              _orig_request = requests.Session.request
-              def _patched_request(self, method, url, **kwargs):
-                  if isinstance(url, str) and any(k in url for k in ('api.telegram.org', 'discord.com', 'feishu', 'qyapi.weixin')):
-                      if isinstance(kwargs.get('json'), dict):
-                          for key in ('text', 'content', 'title'):
-                              if isinstance(kwargs['json'].get(key), str):
-                                  kwargs['json'][key] = _cc.convert(kwargs['json'][key])
-                      if isinstance(kwargs.get('data'), dict):
-                          for key in ('text', 'content', 'title'):
-                              if isinstance(kwargs['data'].get(key), str):
-                                  kwargs['data'][key] = _cc.convert(kwargs['data'][key])
-                  return _orig_request(self, method, url, **kwargs)
-              requests.Session.request = _patched_request
-          except Exception:
-              pass
-          ''')
-          print("✅ 已啟用台灣繁體中文（OpenCC s2twp）模板與通知自動轉換")
-          EOF
-          export PYTHONPATH=".:${PYTHONPATH:-}"
+          # 強制確保產出完整版 .md 報告（避免 Variables 設為 brief 導致 .md 只有幾行摘要）
+          export REPORT_TYPE="simple"
 
           # 构建命令行参数
           FORCE_RUN_ARG=""
@@ -605,7 +567,7 @@ jobs:
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
 
-          # 执行分析
+          # 2. 执行分析（產出完整報告至 reports/）
           if [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "stocks-only" ]; then
@@ -614,46 +576,103 @@ jobs:
             python main.py $FORCE_RUN_ARG
           fi
 
-          # 將產出的 Markdown 報告檔案全部轉為台灣繁體中文
+          # 3. 將 reports/ 所有 .md 轉為道地台灣繁體中文，並統一發送「精簡摘要 + 完整 .md 附件」至 TG 與單一封 Email
+          export REAL_TG_TOKEN REAL_TG_CHAT_ID REAL_EMAIL_SENDER REAL_EMAIL_PASSWORD REAL_EMAIL_RECEIVERS
           python - << 'EOF'
-          import glob, os
-          from opencc import OpenCC
-          cc = OpenCC('s2twp')
-          for path in glob.glob('reports/**/*.md', recursive=True):
-              if os.path.isfile(path):
-                  try:
-                      with open(path, 'r', encoding='utf-8') as f:
-                          text = f.read()
-                      with open(path, 'w', encoding='utf-8') as f:
-                          f.write(cc.convert(text))
-                  except Exception:
-                      pass
-          print("✅ 已將 reports/ 內所有報告檔案轉為台灣繁體中文")
-          EOF
-          # 將完整報告以 .md 檔案（附件）傳送到 Telegram
-          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ] && [ -d reports ]; then
-            find reports -type f -name '*.md' | sort | while IFS= read -r f; do
-              curl -s -o /dev/null -w "%{http_code}" \
-                -F chat_id="$TELEGRAM_CHAT_ID" \
-                -F document=@"$f" \
-                -F caption="📎 完整報告：$(basename "$f")" \
-                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
-                | grep -q '^200$' && echo "✅ 已傳送檔案到 Telegram：$f" || echo "⚠️ 檔案傳送失敗：$f"
-            done
-          fi
-          # 將完整報告以 .md 附件寄到 Email
-          python - << 'EOF'
-          import os, glob, smtplib, ssl, datetime
+          import os, glob, re, smtplib, ssl, datetime, requests
           from email.message import EmailMessage
+          from opencc import OpenCC
 
-          sender = (os.getenv('EMAIL_SENDER') or '').strip()
-          password = (os.getenv('EMAIL_PASSWORD') or '').replace(' ', '').strip()
-          receivers = [r.strip() for r in (os.getenv('EMAIL_RECEIVERS') or sender).split(',') if r.strip()]
-          files = sorted(glob.glob('reports/**/*.md', recursive=True))
+          cc = OpenCC('s2twp')
+          TERM_FIXES = {
+              '覆盤': '復盤',
+              '行情繫統': '行情系統',
+              '回撥': '回檔',
+              '英偉達': '輝達',
+              '特朗普': '川普',
+              '止損': '停損',
+          }
 
-          if not (sender and password and receivers and files):
-              print('⚪ 未設定 Email 或沒有報告檔，略過 Email 附件寄送')
+          def to_tw(text: str) -> str:
+              res = cc.convert(text)
+              for k, v in TERM_FIXES.items():
+                  res = res.replace(k, v)
+              return res
+
+          # (A) 將 reports/ 下所有 .md 完整報告轉為台灣繁體中文
+          md_files = sorted(glob.glob('reports/**/*.md', recursive=True))
+          for path in md_files:
+              if os.path.isfile(path):
+                  with open(path, 'r', encoding='utf-8') as f:
+                      content = f.read()
+                  with open(path, 'w', encoding='utf-8') as f:
+                      f.write(to_tw(content))
+          print(f"✅ 已將 {len(md_files)} 份完整報告轉為台灣繁體中文")
+
+          # (B) 從完整報告中提取「個股簡短摘要（含一句話決策）+ 大盤核心結論」作為 TG 與 Email 內文
+          summary_parts = []
+          for path in md_files:
+              name = os.path.basename(path)
+              with open(path, 'r', encoding='utf-8') as f:
+                  text = f.read()
+              if name.startswith('report_'):
+                  sections = text.split('\n---\n')
+                  head_lines = []
+                  for line in sections[0].splitlines():
+                      if line.strip():
+                          head_lines.append(line.replace('# ', '').replace('## ', ''))
+                  stock_briefs = []
+                  for sec in sections[1:]:
+                      title_m = re.search(r'^##\s+(.+)$', sec, re.M)
+                      dec_m = re.search(r'\*\*一句話決策\*\*[:：]\s*(.+)$', sec, re.M)
+                      if title_m and dec_m:
+                          t = title_m.group(1).strip()
+                          d = dec_m.group(1).strip()
+                          stock_briefs.append(f"• {t}\n  └ {d}")
+                  if stock_briefs:
+                      head_lines.append("\n💬 【個股一句話決策】")
+                      head_lines.extend(stock_briefs)
+                  summary_parts.insert(0, '\n'.join(head_lines))
+              elif name.startswith('market_review_'):
+                  lines = []
+                  for line in text.splitlines():
+                      if line.startswith('# ') and ('大盤' in line) and ('🎯' not in line):
+                          lines.append('\n📌 ' + line.lstrip('# ').strip())
+                      elif line.startswith('> ') and ('下一市場' not in line):
+                          lines.append('  └ ' + line[2:].strip())
+                  if lines:
+                      summary_parts.append('🌍 【台美股大盤核心摘要】' + '\n'.join(lines))
+
+          today = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime('%Y-%m-%d')
+          brief_text = '\n\n'.join(summary_parts).strip()
+          if not brief_text:
+              brief_text = f'📊 {today} 每日股票分析已完成，完整內容請見附件 .md 檔案。'
           else:
+              brief_text += '\n\n📎 完整個股數據與大盤分析請點開下方 .md 檔案查看。'
+
+          # (C) 傳送到 Telegram：1 則繁體短摘要 + 完整 .md 檔案附件（不再貼長篇大盤洗版）
+          tg_token = os.getenv('REAL_TG_TOKEN', '').strip()
+          tg_chat = os.getenv('REAL_TG_CHAT_ID', '').strip()
+          if tg_token and tg_chat and md_files:
+              r = requests.post(
+                  f'https://api.telegram.org/bot{tg_token}/sendMessage',
+                  json={'chat_id': tg_chat, 'text': brief_text[:4000]}
+              )
+              print(f"✅ Telegram 摘要發送狀態: {r.status_code}")
+              for fpath in md_files:
+                  with open(fpath, 'rb') as fp:
+                      r_doc = requests.post(
+                          f'https://api.telegram.org/bot{tg_token}/sendDocument',
+                          data={'chat_id': tg_chat, 'caption': f'📎 完整報告：{os.path.basename(fpath)}'},
+                          files={'document': (os.path.basename(fpath), fp, 'text/markdown')}
+                      )
+                      print(f"✅ Telegram 檔案發送 ({os.path.basename(fpath)}): {r_doc.status_code}")
+
+          # (D) 傳送到 Email：合併為唯一 1 封繁體中文摘要信 + 2 個完整 .md 檔案附件
+          sender = os.getenv('REAL_EMAIL_SENDER', '').strip()
+          password = os.getenv('REAL_EMAIL_PASSWORD', '').replace(' ', '').strip()
+          receivers = [r.strip() for r in (os.getenv('REAL_EMAIL_RECEIVERS') or sender).split(',') if r.strip()]
+          if sender and password and receivers and md_files:
               domain = sender.split('@')[-1].lower()
               hosts = {
                   'gmail.com': ('smtp.gmail.com', 465),
@@ -664,15 +683,14 @@ jobs:
                   'live.com': ('smtp-mail.outlook.com', 587),
               }
               host, port = hosts.get(domain, ('smtp.' + domain, 465))
-              today = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime('%Y-%m-%d')
               msg = EmailMessage()
-              msg['Subject'] = f'📎 {today} 每日股票分析完整報告（.md 附件）'
+              msg['Subject'] = f'📊 {today} 每日股票分析報告（含完整 .md 附件）'
               msg['From'] = sender
               msg['To'] = ', '.join(receivers)
-              msg.set_content('附件為今日完整報告：\n' + '\n'.join('・' + os.path.basename(f) for f in files))
-              for f in files:
-                  with open(f, 'rb') as fp:
-                      msg.add_attachment(fp.read(), maintype='text', subtype='markdown', filename=os.path.basename(f))
+              msg.set_content(brief_text)
+              for fpath in md_files:
+                  with open(fpath, 'rb') as fp:
+                      msg.add_attachment(fp.read(), maintype='text', subtype='markdown', filename=os.path.basename(fpath))
               try:
                   if port == 465:
                       with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=30) as s:
@@ -683,9 +701,9 @@ jobs:
                           s.starttls(context=ssl.create_default_context())
                           s.login(sender, password)
                           s.send_message(msg)
-                  print(f'✅ 已將 {len(files)} 個 .md 附件寄到：{", ".join(receivers)}')
+                  print(f'✅ 已將繁體摘要與 {len(md_files)} 個 .md 附件寄到 Email：{", ".join(receivers)}')
               except Exception as e:
-                  print(f'⚠️ Email 附件寄送失敗：{e}')
+                  print(f'⚠️ Email 寄送失敗：{e}')
           EOF
       
       - name: 上传分析报告
