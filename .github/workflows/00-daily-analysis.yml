@@ -630,6 +630,17 @@ jobs:
                       pass
           print("✅ 已將 reports/ 內所有報告檔案轉為台灣繁體中文")
           EOF
+          # 將完整報告以 .md 檔案（附件）傳送到 Telegram
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ] && [ -d reports ]; then
+            find reports -type f -name '*.md' | sort | while IFS= read -r f; do
+              curl -s -o /dev/null -w "%{http_code}" \
+                -F chat_id="$TELEGRAM_CHAT_ID" \
+                -F document=@"$f" \
+                -F caption="📎 完整報告：$(basename "$f")" \
+                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+                | grep -q '^200$' && echo "✅ 已傳送檔案到 Telegram：$f" || echo "⚠️ 檔案傳送失敗：$f"
+            done
+          fi
       
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
