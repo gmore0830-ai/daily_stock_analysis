@@ -641,6 +641,52 @@ jobs:
                 | grep -q '^200$' && echo "✅ 已傳送檔案到 Telegram：$f" || echo "⚠️ 檔案傳送失敗：$f"
             done
           fi
+          # 將完整報告以 .md 附件寄到 Email
+          python - << 'EOF'
+          import os, glob, smtplib, ssl, datetime
+          from email.message import EmailMessage
+
+          sender = (os.getenv('EMAIL_SENDER') or '').strip()
+          password = (os.getenv('EMAIL_PASSWORD') or '').replace(' ', '').strip()
+          receivers = [r.strip() for r in (os.getenv('EMAIL_RECEIVERS') or sender).split(',') if r.strip()]
+          files = sorted(glob.glob('reports/**/*.md', recursive=True))
+
+          if not (sender and password and receivers and files):
+              print('⚪ 未設定 Email 或沒有報告檔，略過 Email 附件寄送')
+          else:
+              domain = sender.split('@')[-1].lower()
+              hosts = {
+                  'gmail.com': ('smtp.gmail.com', 465),
+                  'yahoo.com': ('smtp.mail.yahoo.com', 465),
+                  'yahoo.com.tw': ('smtp.mail.yahoo.com', 465),
+                  'outlook.com': ('smtp-mail.outlook.com', 587),
+                  'hotmail.com': ('smtp-mail.outlook.com', 587),
+                  'live.com': ('smtp-mail.outlook.com', 587),
+              }
+              host, port = hosts.get(domain, ('smtp.' + domain, 465))
+              today = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime('%Y-%m-%d')
+              msg = EmailMessage()
+              msg['Subject'] = f'📎 {today} 每日股票分析完整報告（.md 附件）'
+              msg['From'] = sender
+              msg['To'] = ', '.join(receivers)
+              msg.set_content('附件為今日完整報告：\n' + '\n'.join('・' + os.path.basename(f) for f in files))
+              for f in files:
+                  with open(f, 'rb') as fp:
+                      msg.add_attachment(fp.read(), maintype='text', subtype='markdown', filename=os.path.basename(f))
+              try:
+                  if port == 465:
+                      with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=30) as s:
+                          s.login(sender, password)
+                          s.send_message(msg)
+                  else:
+                      with smtplib.SMTP(host, port, timeout=30) as s:
+                          s.starttls(context=ssl.create_default_context())
+                          s.login(sender, password)
+                          s.send_message(msg)
+                  print(f'✅ 已將 {len(files)} 個 .md 附件寄到：{", ".join(receivers)}')
+              except Exception as e:
+                  print(f'⚠️ Email 附件寄送失敗：{e}')
+          EOF
       
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
