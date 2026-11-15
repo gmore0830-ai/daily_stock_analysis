@@ -54,6 +54,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install opencc-python-reimplemented
           python -c "import futu; print('✅ futu SDK import OK')"
       
       - name: 创建必要目录
@@ -427,8 +428,8 @@ jobs:
           # ==========================================
           # 避免直接写入 STOCK_LIST，保留同名 Environment variables 的 runner 环境值。
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
-          MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
-          MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
+          MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'tw,us' }}
+          MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'red_up' }}
           
           # ==========================================
           # 运行配置 ⬅️ 新增！
@@ -445,7 +446,7 @@ jobs:
           # 系统配置
           # ==========================================
           LOG_LEVEL: INFO
-          MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
+          MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '4' }}
           # 筹码分布：默认 false（云端接口不稳定）；需启用时在 Settings → Variables 添加 ENABLE_CHIP_DISTRIBUTION=true
           ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || secrets.ENABLE_CHIP_DISTRIBUTION || 'false' }}
           # 实时行情数据源优先级（未设置时由运行时按已配置的 Key 自动选择）
@@ -548,6 +549,55 @@ jobs:
           echo "=========================================="
           echo ""
           
+          # 自動清理 Telegram Token 與 Chat ID（去除頭尾空白、換行，以及誤加的開頭 bot 字樣）
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+            export TELEGRAM_BOT_TOKEN="$(printf '%s' "$TELEGRAM_BOT_TOKEN" | tr -d '[:space:]' | sed 's/^bot//i')"
+          fi
+          if [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            export TELEGRAM_CHAT_ID="$(printf '%s' "$TELEGRAM_CHAT_ID" | tr -d '[:space:]')"
+          fi
+
+          # 啟用台灣繁體中文（s2twp）自動轉換（模板 + Telegram/Webhook 推播攔截轉換）
+          python - << 'EOF'
+          import glob, os
+          from opencc import OpenCC
+          cc = OpenCC('s2twp')
+
+          for path in glob.glob('templates/**/*.*', recursive=True):
+              if os.path.isfile(path):
+                  try:
+                      with open(path, 'r', encoding='utf-8') as f:
+                          content = f.read()
+                      with open(path, 'w', encoding='utf-8') as f:
+                          f.write(cc.convert(content))
+                  except Exception:
+                      pass
+
+          with open('sitecustomize.py', 'w', encoding='utf-8') as f:
+              f.write('''import requests
+          try:
+              from opencc import OpenCC
+              _cc = OpenCC('s2twp')
+              _orig_request = requests.Session.request
+              def _patched_request(self, method, url, **kwargs):
+                  if isinstance(url, str) and any(k in url for k in ('api.telegram.org', 'discord.com', 'feishu', 'qyapi.weixin')):
+                      if isinstance(kwargs.get('json'), dict):
+                          for key in ('text', 'content', 'title'):
+                              if isinstance(kwargs['json'].get(key), str):
+                                  kwargs['json'][key] = _cc.convert(kwargs['json'][key])
+                      if isinstance(kwargs.get('data'), dict):
+                          for key in ('text', 'content', 'title'):
+                              if isinstance(kwargs['data'].get(key), str):
+                                  kwargs['data'][key] = _cc.convert(kwargs['data'][key])
+                  return _orig_request(self, method, url, **kwargs)
+              requests.Session.request = _patched_request
+          except Exception:
+              pass
+          ''')
+          print("✅ 已啟用台灣繁體中文（OpenCC s2twp）模板與通知自動轉換")
+          EOF
+          export PYTHONPATH=".:${PYTHONPATH:-}"
+
           # 构建命令行参数
           FORCE_RUN_ARG=""
           if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
@@ -563,6 +613,23 @@ jobs:
           else
             python main.py $FORCE_RUN_ARG
           fi
+
+          # 將產出的 Markdown 報告檔案全部轉為台灣繁體中文
+          python - << 'EOF'
+          import glob, os
+          from opencc import OpenCC
+          cc = OpenCC('s2twp')
+          for path in glob.glob('reports/**/*.md', recursive=True):
+              if os.path.isfile(path):
+                  try:
+                      with open(path, 'r', encoding='utf-8') as f:
+                          text = f.read()
+                      with open(path, 'w', encoding='utf-8') as f:
+                          f.write(cc.convert(text))
+                  except Exception:
+                      pass
+          print("✅ 已將 reports/ 內所有報告檔案轉為台灣繁體中文")
+          EOF
       
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
