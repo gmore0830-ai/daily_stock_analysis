@@ -45,7 +45,8 @@ jobs:
     timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
     
     steps:
-      - name: 随机延迟（避免固定时间访问）
+      - name: 随机延迟（仅定时排程触发时延迟，TG 查股不等待）
+        if: github.event_name == 'schedule'
         run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
       
       - name: 检出代码
@@ -59,10 +60,8 @@ jobs:
       
       - name: 安装依赖
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install opencc-python-reimplemented
-          python -c "import futu; print('✅ futu SDK import OK')"
+          grep -v -i "futu" requirements.txt > requirements_fast.txt
+          pip install --prefer-binary -r requirements_fast.txt opencc-python-reimplemented
       
       - name: 创建必要目录
         run: |
@@ -582,20 +581,24 @@ jobs:
             FORCE_RUN_ARG="--force-run"
             if [ "$CUSTOM_STOCKS" != "ALL" ]; then
               export STOCK_LIST="$CUSTOM_STOCKS"
+              export GEMINI_MODEL="gemini-3.8-flash"
+              export GEMINI_REQUEST_DELAY="0"
+              export ANALYSIS_DELAY="0"
               MODE="stocks-only"
               IS_CUSTOM_QUERY="true"
-              echo "📱 收到 TG 指定查股：$STOCK_LIST（極速單查模式）"
+              echo "📱 收到 TG 指定查股：$STOCK_LIST（極速單查模式，使用 $GEMINI_MODEL）"
             else
               echo "📱 收到 TG 全清單查股指令"
             fi
           fi
 
           # 1.5 自動雙重確認台股 .TW (上市) 與 .TWO (上櫃)，並將 TG 進度原地更新為 [2/3]
-          export REAL_TG_TOKEN REAL_TG_CHAT_ID STATUS_MSG_ID
+          export REAL_TG_TOKEN REAL_TG_CHAT_ID STATUS_MSG_ID IS_CUSTOM_QUERY
           STOCK_LIST="$(python - << 'PYEOF'
           import os, requests
 
           stocks = [s.strip() for s in os.getenv('STOCK_LIST', '').split(',') if s.strip()]
+          is_custom = os.getenv('IS_CUSTOM_QUERY', 'false') == 'true'
           resolved = []
           headers = {'User-Agent': 'Mozilla/5.0'}
 
@@ -611,7 +614,8 @@ jobs:
 
           for s in stocks:
               u = s.upper()
-              if u.endswith('.TW') and not has_yahoo_data(u) and has_yahoo_data(u[:-3] + '.TWO'):
+              # TG 單查時 Worker 已驗證過 .TW/.TWO，直接跳過重複檢查以節省時間
+              if (not is_custom) and u.endswith('.TW') and not has_yahoo_data(u) and has_yahoo_data(u[:-3] + '.TWO'):
                   u = u[:-3] + '.TWO'
               resolved.append(u)
 
@@ -626,7 +630,7 @@ jobs:
                       json={
                           'chat_id': tg_chat,
                           'message_id': int(msg_id),
-                          'text': f'🚀 [2/3] 雲端主機已就緒！\n🎯 正在抓取 {final_list} 最新股價、籌碼與新聞，並由 Gemini AI 撰寫報告中（約需 40～60 秒）...'
+                          'text': f'🚀 [2/3] 雲端主機已就緒！\n🎯 正在抓取 {final_list} 最新股價、籌碼與新聞，並由 Gemini AI 極速撰寫報告中（約需 25～40 秒）...'
                       },
                       timeout=5
                   )
