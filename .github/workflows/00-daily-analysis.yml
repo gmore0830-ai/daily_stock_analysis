@@ -1,27 +1,34 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
-  
-  # 手动触发
+    - cron: '0 10 * * 1-5'     # 週一至週五 UTC 10:00 = 台灣時間 18:00（下午6點）
   workflow_dispatch:
     inputs:
       mode:
         description: '运行模式'
-        required: true
+        required: false
         default: 'full'
         type: choice
         options:
-          - full          # 完整分析（股票+大盘）
-          - market-only   # 仅大盘复盘
-          - stocks-only   # 仅股票分析
+          - full
+          - market-only
+          - stocks-only
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
         default: false
         type: boolean
+      custom_stocks:
+        description: '指定查詢股票代號（由 TG 機器人自動帶入，留空則跑預設清單）'
+        required: false
+        default: ''
+        type: string
+      status_msg_id:
+        description: 'TG 進度訊息 ID（由 TG 機器人自動帶入，完成後自動刪除）'
+        required: false
+        default: ''
+        type: string
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
@@ -560,12 +567,75 @@ jobs:
           # 強制確保產出完整版 .md 報告（避免 Variables 設為 brief 導致 .md 只有幾行摘要）
           export REPORT_TYPE="simple"
 
-          # 构建命令行参数
+          # 檢查是否為 Telegram 傳來的臨時查股指令
+          CUSTOM_STOCKS="$(printf '%s' "${{ github.event.inputs.custom_stocks }}" | tr -d '[:space:]')"
+          STATUS_MSG_ID="$(printf '%s' "${{ github.event.inputs.status_msg_id }}" | tr -d '[:space:]')"
+          IS_CUSTOM_QUERY="false"
+
           FORCE_RUN_ARG=""
           if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
             FORCE_RUN_ARG="--force-run"
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
+
+          if [ -n "$CUSTOM_STOCKS" ]; then
+            FORCE_RUN_ARG="--force-run"
+            if [ "$CUSTOM_STOCKS" != "ALL" ]; then
+              export STOCK_LIST="$CUSTOM_STOCKS"
+              MODE="stocks-only"
+              IS_CUSTOM_QUERY="true"
+              echo "📱 收到 TG 指定查股：$STOCK_LIST（極速單查模式）"
+            else
+              echo "📱 收到 TG 全清單查股指令"
+            fi
+          fi
+
+          # 1.5 自動雙重確認台股 .TW (上市) 與 .TWO (上櫃)，並將 TG 進度原地更新為 [2/3]
+          export REAL_TG_TOKEN REAL_TG_CHAT_ID STATUS_MSG_ID
+          STOCK_LIST="$(python - << 'PYEOF'
+          import os, requests
+
+          stocks = [s.strip() for s in os.getenv('STOCK_LIST', '').split(',') if s.strip()]
+          resolved = []
+          headers = {'User-Agent': 'Mozilla/5.0'}
+
+          def has_yahoo_data(symbol):
+              try:
+                  r = requests.get(f'https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d', headers=headers, timeout=5)
+                  if r.status_code == 200:
+                      q = r.json().get('chart', {}).get('result', [{}])[0].get('indicators', {}).get('quote', [{}])[0].get('close', [])
+                      return any(v is not None for v in q)
+              except Exception:
+                  pass
+              return False
+
+          for s in stocks:
+              u = s.upper()
+              if u.endswith('.TW') and not has_yahoo_data(u) and has_yahoo_data(u[:-3] + '.TWO'):
+                  u = u[:-3] + '.TWO'
+              resolved.append(u)
+
+          final_list = ','.join(resolved)
+          tg_token = os.getenv('REAL_TG_TOKEN', '').strip()
+          tg_chat = os.getenv('REAL_TG_CHAT_ID', '').strip()
+          msg_id = os.getenv('STATUS_MSG_ID', '').strip()
+          if tg_token and tg_chat and msg_id:
+              try:
+                  requests.post(
+                      f'https://api.telegram.org/bot{tg_token}/editMessageText',
+                      json={
+                          'chat_id': tg_chat,
+                          'message_id': int(msg_id),
+                          'text': f'🚀 [2/3] 雲端主機已就緒！\n🎯 正在抓取 {final_list} 最新股價、籌碼與新聞，並由 Gemini AI 撰寫報告中（約需 40～60 秒）...'
+                      },
+                      timeout=5
+                  )
+              except Exception:
+                  pass
+          print(final_list)
+          PYEOF
+          )"
+          export STOCK_LIST
 
           # 2. 执行分析（產出完整報告至 reports/）
           if [ "$MODE" = "market-only" ]; then
@@ -576,8 +646,8 @@ jobs:
             python main.py $FORCE_RUN_ARG
           fi
 
-          # 3. 將 reports/ 所有 .md 轉為道地台灣繁體中文，並統一發送「精簡摘要 + 完整 .md 附件」至 TG 與單一封 Email
-          export REAL_TG_TOKEN REAL_TG_CHAT_ID REAL_EMAIL_SENDER REAL_EMAIL_PASSWORD REAL_EMAIL_RECEIVERS
+          # 3. 將 reports/ 所有 .md 轉為道地台灣繁體中文，發送結果並自動刪除 TG 過渡訊息
+          export REAL_TG_TOKEN REAL_TG_CHAT_ID REAL_EMAIL_SENDER REAL_EMAIL_PASSWORD REAL_EMAIL_RECEIVERS IS_CUSTOM_QUERY STATUS_MSG_ID
           python - << 'EOF'
           import os, glob, re, smtplib, ssl, datetime, requests
           from email.message import EmailMessage
@@ -646,13 +716,14 @@ jobs:
           today = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime('%Y-%m-%d')
           brief_text = '\n\n'.join(summary_parts).strip()
           if not brief_text:
-              brief_text = f'📊 {today} 每日股票分析已完成，完整內容請見附件 .md 檔案。'
+              brief_text = f'📊 {today} 股票分析已完成，完整內容請見附件 .md 檔案。'
           else:
-              brief_text += '\n\n📎 完整個股數據與大盤分析請點開下方 .md 檔案查看。'
+              brief_text += '\n\n📎 完整個股數據與分析請點開下方 .md 檔案查看。'
 
-          # (C) 傳送到 Telegram：1 則繁體短摘要 + 完整 .md 檔案附件（不再貼長篇大盤洗版）
+          # (C) 傳送到 Telegram：1 則繁體短摘要 + 完整 .md 檔案附件，並自動刪除過渡進度訊息
           tg_token = os.getenv('REAL_TG_TOKEN', '').strip()
           tg_chat = os.getenv('REAL_TG_CHAT_ID', '').strip()
+          msg_id = os.getenv('STATUS_MSG_ID', '').strip()
           if tg_token and tg_chat and md_files:
               r = requests.post(
                   f'https://api.telegram.org/bot{tg_token}/sendMessage',
@@ -668,11 +739,24 @@ jobs:
                       )
                       print(f"✅ Telegram 檔案發送 ({os.path.basename(fpath)}): {r_doc.status_code}")
 
-          # (D) 傳送到 Email：合併為唯一 1 封繁體中文摘要信 + 2 個完整 .md 檔案附件
+              # 自動刪除 [1/3]、[2/3] 過渡進度訊息，保持版面乾淨
+              if msg_id:
+                  try:
+                      requests.post(
+                          f'https://api.telegram.org/bot{tg_token}/deleteMessage',
+                          json={'chat_id': tg_chat, 'message_id': int(msg_id)},
+                          timeout=5
+                      )
+                      print(f"🧹 已自動清理 TG 過渡進度訊息 (ID: {msg_id})")
+                  except Exception as e:
+                      print(f"⚠️ 清理過渡訊息失敗: {e}")
+
+          # (D) 傳送到 Email：僅在「每日排程」或「全清單查詢」時寄信（TG 單查個股不寄信避免洗版）
+          is_custom = os.getenv('IS_CUSTOM_QUERY', 'false') == 'true'
           sender = os.getenv('REAL_EMAIL_SENDER', '').strip()
           password = os.getenv('REAL_EMAIL_PASSWORD', '').replace(' ', '').strip()
           receivers = [r.strip() for r in (os.getenv('REAL_EMAIL_RECEIVERS') or sender).split(',') if r.strip()]
-          if sender and password and receivers and md_files:
+          if (not is_custom) and sender and password and receivers and md_files:
               domain = sender.split('@')[-1].lower()
               hosts = {
                   'gmail.com': ('smtp.gmail.com', 465),
