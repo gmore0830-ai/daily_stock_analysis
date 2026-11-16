@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 新增 `PYTDX_ENABLED`（默认 `true`），设为 `false` 时不注册 PytdxFetcher；每日 Actions 默认关闭，避免公共通达信服务器不可达时反复连接超时拖慢港/美/台股分析。
+- [改进] 每日 Actions：默认超时提高至 45 分钟；Python 环境缓存 key 纳入 Python 补丁版本与额外依赖；Telegram 单股查询模型改为可配置 `TG_GEMINI_MODEL`。
 - [修复] Docker 构建与启动入口在 ARM64 架构下默认设置 `OPENBLAS_CORETYPE=ARMV8`（保留用户显式覆盖且不影响 x86_64），修复 Apple Silicon Linux 虚拟机因 OpenBLAS SME 指令分发导致 `Illegal instruction (exit code 132)` 崩溃的问题，并补充部署排障说明。
 
 - [修复] 关闭 LiteLLM 逐 chunk 的 streaming success logging（本项目未注册 LiteLLM callback，用量统计不受影响），修复 Windows 上每个流式 chunk 新建事件循环与回环 socketpair、全局线程池卡在 `accept()`，导致 CLI 打印「程序执行完成」后进程不退出且额外占用大量 CPU 的问题。

@@ -15,6 +15,7 @@
 """
 
 import logging
+import os
 import random
 import time
 from threading import BoundedSemaphore, RLock, Thread
@@ -1811,7 +1812,7 @@ class DataFetcherManager:
           4. YfinanceFetcher (Priority 4)
           5. TencentFetcher (Priority 5) - A 股最终兜底
         """
-        from src.config import get_config
+        from src.config import get_config, parse_env_bool
         from .efinance_fetcher import EfinanceFetcher
         from .tencent_fetcher import TencentFetcher
         from .akshare_fetcher import AkshareFetcher
@@ -1828,7 +1829,13 @@ class DataFetcherManager:
         efinance = EfinanceFetcher()
         tencent = TencentFetcher()
         akshare = AkshareFetcher()
-        pytdx = PytdxFetcher()      # 通达信数据源（可配 PYTDX_HOST/PYTDX_PORT）
+        # 通达信数据源（可配 PYTDX_HOST/PYTDX_PORT）；PYTDX_ENABLED=false 时跳过，
+        # 适用于仅分析港美台股、公共通达信服务器不可达的环境（如 GitHub Actions）
+        if parse_env_bool(os.getenv("PYTDX_ENABLED"), default=True):
+            pytdx: Optional[BaseFetcher] = PytdxFetcher()
+        else:
+            pytdx = None
+            logger.info("[数据源初始化] PYTDX_ENABLED=false，跳过 PytdxFetcher")
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
         optional_fetchers: List[BaseFetcher] = []
@@ -1901,7 +1908,7 @@ class DataFetcherManager:
                 *([TickPlusFetcher(tickplus_key, getattr(config, "tickplus_priority", 0))] if tickplus_key else []),
                 efinance,
                 akshare,
-                pytdx,
+                *([pytdx] if pytdx is not None else []),
                 baostock,
                 yfinance,
                 tencent,

@@ -42,17 +42,18 @@ jobs:
     # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
     environment: STOCK_LIST
     # 添加超时限制，防止任务卡死
-    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
+    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '45') }}
     
     steps:
       - name: 随机延迟（仅定时排程触发时延迟，TG 查股不等待）
         if: github.event_name == 'schedule'
-        run: sleep $((RANDOM % 10))  # 已錯開至 18:07，僅微幅隨機延遲 0-10 秒
+        run: sleep $((RANDOM % 10))  # 已錯開至 17:07，僅微幅隨機延遲 0-10 秒
       
       - name: 检出代码
         uses: actions/checkout@v5
       
       - name: 设置 Python 环境
+        id: setup-python
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
@@ -62,7 +63,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/hostedtoolcache/Python
-          key: ${{ runner.os }}-py311-full-v1-${{ hashFiles('requirements.txt') }}
+          # key 含 Python 補丁版本：runner 升級 3.11.x 時自動重建，避免還原到舊版本目錄導致套件缺失
+          # 額外安裝的套件（opencc 等）有變動時，請同步調整下方 v2 版本前綴
+          key: ${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-full-v2-${{ hashFiles('requirements.txt') }}
       
       - name: 安装依赖（快取命中時自動 0 秒跳過）
         if: steps.py-env-cache.outputs.cache-hit != 'true'
@@ -128,6 +131,9 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3.6-flash' }}
           GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-3.5-flash-lite' }}
           GEMINI_REQUEST_DELAY: ${{ vars.GEMINI_REQUEST_DELAY || '10' }}
+          # TG 指定查股（極速單查）專用模型，可用 repo 變數覆蓋
+          TG_GEMINI_MODEL: ${{ vars.TG_GEMINI_MODEL || 'gemini-3.8-flash' }}
+          TG_GEMINI_MODEL_FALLBACK: ${{ vars.TG_GEMINI_MODEL_FALLBACK || 'gemini-3.6-flash' }}
           
           # AIHubMix（优先于 OPENAI_API_KEY，自动适配 base_url，推荐国内用户）
           AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
@@ -453,6 +459,8 @@ jobs:
           SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
           MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
           ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
+          # 公共通達信伺服器在 GitHub Actions 上連不到，只分析台/美股時關閉以省下每次約 30 秒的連線逾時
+          PYTDX_ENABLED: ${{ vars.PYTDX_ENABLED || 'false' }}
           TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || secrets.TRADING_DAY_CHECK_ENABLED || 'true' }}
           
           # ==========================================
@@ -588,7 +596,8 @@ jobs:
             FORCE_RUN_ARG="--force-run"
             if [ "$CUSTOM_STOCKS" != "ALL" ]; then
               export STOCK_LIST="$CUSTOM_STOCKS"
-              export GEMINI_MODEL="gemini-3.8-flash"
+              export GEMINI_MODEL="${TG_GEMINI_MODEL:-$GEMINI_MODEL}"
+              export GEMINI_MODEL_FALLBACK="${TG_GEMINI_MODEL_FALLBACK:-$GEMINI_MODEL_FALLBACK}"
               export GEMINI_REQUEST_DELAY="0"
               export ANALYSIS_DELAY="0"
               MODE="stocks-only"
