@@ -43,7 +43,11 @@ jobs:
     environment: STOCK_LIST
     # 添加超时限制，防止任务卡死
     timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '45') }}
-    
+    # Runner 預設為 UTC；設為台灣時間（UTC+8，與 Docker 映像的 TZ 一致），
+    # 避免台灣 00:00～08:00 觸發時報告日期、檔名與日誌檔名落在前一天
+    env:
+      TZ: ${{ vars.TZ || 'Asia/Taipei' }}
+
     steps:
       - name: 随机延迟（仅定时排程触发时延迟，TG 查股不等待）
         if: github.event_name == 'schedule'
