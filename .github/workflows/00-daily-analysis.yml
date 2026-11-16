@@ -2,7 +2,7 @@ name: 每日股票分析
 
 on:
   schedule:
-    - cron: '7 10 * * 1-5'     # 週一至週五 UTC 10:00 = 台灣時間 18:00（下午6點）
+  - cron: '7 9 * * 1-5'      # 週一至週五 UTC 09:07 = 台灣時間 17:07（錯開整點尖峰）
   workflow_dispatch:
     inputs:
       mode:
@@ -47,7 +47,7 @@ jobs:
     steps:
       - name: 随机延迟（仅定时排程触发时延迟，TG 查股不等待）
         if: github.event_name == 'schedule'
-        run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
+        run: sleep $((RANDOM % 10))  # 已錯開至 18:07，僅微幅隨機延遲 0-10 秒
       
       - name: 检出代码
         uses: actions/checkout@v5
@@ -56,9 +56,16 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-          cache: 'pip'
       
-      - name: 安装依赖
+      - name: 快取已安裝的 Python 完整環境
+        id: py-env-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/hostedtoolcache/Python
+          key: ${{ runner.os }}-py311-full-v1-${{ hashFiles('requirements.txt') }}
+      
+      - name: 安装依赖（快取命中時自動 0 秒跳過）
+        if: steps.py-env-cache.outputs.cache-hit != 'true'
         run: |
           grep -v -i "futu" requirements.txt > requirements_fast.txt
           pip install --prefer-binary -r requirements_fast.txt opencc-python-reimplemented
@@ -667,7 +674,12 @@ jobs:
               '止損': '停損',
               '儀表盤': '儀表板',
               '儀錶盤': '儀表板',
-              '只股票': '檔股票',  # 選加：把「共分析 9 只股票」改成「9 檔股票」
+              '只股票': '檔股票',
+              'TAIWAN SEMICONDUCTOR MANUFACTUR': '台積電',
+              'COMPEQ MANUFACTURING': '華通',
+              'CENTRAL REINSURANCE': '中再保',
+              'KEDGE CONSTRUCTION CO': '根基',
+              'JETWELL COMPUTER CO': '大綜',
           }
 
           def to_tw(text: str) -> str:
