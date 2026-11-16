@@ -2,7 +2,7 @@ name: 每日股票分析
 
 on:
   schedule:
-    - cron: '0 10 * * 1-5'     # 週一至週五 UTC 10:00 = 台灣時間 18:00（下午6點）
+    - cron: '7 10 * * 1-5'     # 週一至週五 UTC 10:00 = 台灣時間 18:00（下午6點）
   workflow_dispatch:
     inputs:
       mode:
