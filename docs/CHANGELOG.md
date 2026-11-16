@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 台/日/韩股查询股票名称时跳过已知不支持该市场的 A 股数据源（如 Baostock），避免无效登录、日志噪音与额外耗时。
 - [改进] 新增 `PYTDX_ENABLED`（默认 `true`），设为 `false` 时不注册 PytdxFetcher；每日 Actions 默认关闭，避免公共通达信服务器不可达时反复连接超时拖慢港/美/台股分析。
 - [改进] 每日 Actions：默认超时提高至 45 分钟；Python 环境缓存 key 纳入 Python 补丁版本与额外依赖；Telegram 单股查询模型改为可配置 `TG_GEMINI_MODEL`。
 - [修复] Docker 构建与启动入口在 ARM64 架构下默认设置 `OPENBLAS_CORETYPE=ARMV8`（保留用户显式覆盖且不影响 x86_64），修复 Apple Silicon Linux 虚拟机因 OpenBLAS SME 指令分发导致 `Illegal instruction (exit code 132)` 崩溃的问题，并补充部署排障说明。

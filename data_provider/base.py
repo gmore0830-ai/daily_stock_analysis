@@ -3138,11 +3138,24 @@ class DataFetcherManager:
         from .akshare_fetcher import _is_us_code
         is_us = _is_us_code(stock_code)
         _US_CAPABLE_FETCHERS = {"YfinanceFetcher", "LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher"}
+        # 台/日/韩股：跳过已知不支持该市场的 A 股数据源（如 Baostock），避免无效登录与名称查询
+        name_market = None
+        if not is_us:
+            if _is_tw_market(stock_code):
+                name_market = "tw"
+            elif _is_jp_market(stock_code):
+                name_market = "jp"
+            elif _is_kr_market(stock_code):
+                name_market = "kr"
         for fetcher in self._get_fetchers_snapshot():
             if not hasattr(fetcher, 'get_stock_name'):
                 continue
             if is_us and fetcher.name not in _US_CAPABLE_FETCHERS:
                 continue
+            if name_market is not None:
+                supported = self._DAILY_MARKET_FETCHER_SUPPORT.get(fetcher.name)
+                if supported is not None and name_market not in supported:
+                    continue
             if not self._is_fetcher_available(fetcher, capability="stock_name"):
                 continue
             try:
