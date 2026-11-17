@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -21,6 +22,32 @@ _FIXED_TEMPERATURE_LITELLM_MODELS: Dict[str, Dict[str, float]] = {
         "non_thinking": 0.6,
     },
 }
+
+
+# Gemini 3+ models think at a high level by default, which made a single
+# stock-analysis call take 160-280s in CI. LiteLLM maps ``reasoning_effort``
+# to Gemini 3's ``thinkingLevel``. Opt-in via GEMINI_THINKING_LEVEL; unset keeps
+# the provider default.
+_GEMINI_THINKING_LEVELS = ("minimal", "low", "medium", "high")
+_GEMINI_THINKING_PROVIDER_PREFIXES = ("", "gemini", "vertex_ai", "vertex_ai_beta")
+_GEMINI_3_PLUS_PATTERN = re.compile(r"^gemini-(?:[3-9]|[1-9]\d+)(?:[.\-]|$)")
+
+
+def resolve_gemini_thinking_level() -> Optional[str]:
+    """Return the configured GEMINI_THINKING_LEVEL, or None when unset/invalid."""
+    raw = (os.getenv("GEMINI_THINKING_LEVEL") or "").strip().lower()
+    return raw if raw in _GEMINI_THINKING_LEVELS else None
+
+
+def is_gemini_3_or_newer_wire_model(wire_model: str) -> bool:
+    """True for native Gemini/Vertex wire models of generation 3 or newer."""
+    normalized = (wire_model or "").strip().lower()
+    if not normalized:
+        return False
+    provider, _, name = normalized.rpartition("/")
+    if provider not in _GEMINI_THINKING_PROVIDER_PREFIXES:
+        return False
+    return bool(_GEMINI_3_PLUS_PATTERN.match(name))
 
 
 @dataclass(frozen=True)
@@ -429,6 +456,13 @@ def apply_litellm_generation_params(
         updated["temperature"] = directive.temperature
     else:
         updated["temperature"] = default_temperature if temperature is None else float(temperature)
+    thinking_level = resolve_gemini_thinking_level()
+    if (
+        thinking_level
+        and "reasoning_effort" not in updated
+        and is_gemini_3_or_newer_wire_model(resolve_litellm_wire_model(model, model_list))
+    ):
+        updated["reasoning_effort"] = thinking_level
     cached_recovery = get_cached_litellm_generation_param_recovery(
         model,
         model_list=model_list,
