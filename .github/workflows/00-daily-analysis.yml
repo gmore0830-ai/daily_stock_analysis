@@ -1,7 +1,7 @@
 name: 每日股票分析
 
 on:
-  # 定時排程改由 Cloudflare Worker Cron Trigger（45 8 * * 1-5 = 台灣 16:45）呼叫 workflow_dispatch 觸發，
+  # 定時排程改由 Cloudflare Worker Cron Trigger（45 8 * * MON-FRI = 台灣 16:45）呼叫 workflow_dispatch 觸發，
   # GitHub 內建 schedule 在 fork 上常延遲或不觸發，已移除。
   workflow_dispatch:
     inputs:
