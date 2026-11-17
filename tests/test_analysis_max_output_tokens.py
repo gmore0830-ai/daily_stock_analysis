@@ -185,3 +185,45 @@ def test_analyze_falls_back_to_next_model_on_timeout():
 
     assert result.success is True
     assert "backup-route" in attempted
+
+
+# ---------------------------------------------------------------------------
+# Market review / free-text generation also honors LLM_ANALYSIS_TIMEOUT_SEC
+# ---------------------------------------------------------------------------
+
+def _text_response(kwargs):
+    if kwargs.get("stream"):
+        return iter([SimpleNamespace(
+            model="openai/m", usage=None,
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="复盘内容"))],
+        )])
+    return SimpleNamespace(
+        model="openai/m", usage=None,
+        choices=[SimpleNamespace(message=SimpleNamespace(content="复盘内容"))],
+    )
+
+
+@pytest.mark.parametrize("method", ["generate_text_with_metadata", "generate_text"])
+@pytest.mark.parametrize("timeout_sec,expected_timeout", [(420.0, 420.0), (0.0, None)])
+def test_text_generation_passes_timeout(method, timeout_sec, expected_timeout):
+    seen = []
+
+    def dispatch(model, kwargs, **_):
+        seen.append(dict(kwargs))
+        return _text_response(kwargs)
+
+    analyzer = _make_analyzer(Config(
+        litellm_model="primary-route",
+        litellm_fallback_models=[],
+        gemini_request_delay=0,
+        llm_analysis_timeout_sec=timeout_sec,
+    ))
+    with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=dispatch), \
+         patch("src.analyzer.persist_llm_usage"):
+        result = getattr(analyzer, method)("prompt", max_tokens=8192, temperature=0.7)
+
+    assert result
+    assert seen
+    for kwargs in seen:
+        assert kwargs["max_tokens"] == 8192
+        assert kwargs.get("timeout") == expected_timeout

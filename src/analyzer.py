@@ -3996,7 +3996,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         try:
             result = self._call_litellm(
                 prompt,
-                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                generation_config=self._build_text_generation_config(max_tokens, temperature),
             )
             if isinstance(result, tuple):
                 text, model_used, usage = result
@@ -4018,6 +4018,14 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         config = self._get_runtime_config()
         return backend_id, str(getattr(config, "litellm_model", "") or "")
 
+    def _build_text_generation_config(self, max_tokens: int, temperature: float) -> Dict[str, Any]:
+        """generation_config for free-text calls (market review etc.), honoring LLM_ANALYSIS_TIMEOUT_SEC."""
+        generation_config: Dict[str, Any] = {"max_tokens": max_tokens, "temperature": temperature}
+        timeout_sec = _resolve_analysis_timeout_sec(self._get_runtime_config())
+        if timeout_sec is not None:
+            generation_config["timeout"] = timeout_sec
+        return generation_config
+
     def generate_text_with_metadata(
         self,
         prompt: str,
@@ -4028,7 +4036,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         try:
             result = self._call_litellm(
                 prompt,
-                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                generation_config=self._build_text_generation_config(max_tokens, temperature),
                 return_generation_result=True,
             )
             if not isinstance(result, GenerationResult):

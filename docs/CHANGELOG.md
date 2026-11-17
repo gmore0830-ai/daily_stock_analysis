@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 每日 Actions：默认超时提高至 45 分钟；Python 环境缓存 key 纳入 Python 补丁版本与额外依赖；Telegram 单股查询模型改为可配置 `TG_GEMINI_MODEL`。
 - [改进] 新增 `GEMINI_THINKING_LEVEL`（minimal/low/medium/high），通过 LiteLLM `reasoning_effort` 控制 Gemini 3+ 模型思考强度，留空保持模型默认；GitHub Actions 每日分析默认留空（沿用模型默认的 high）。
 - [改进] 新增 `LLM_ANALYSIS_MAX_OUTPUT_TOKENS`（默认 `8192`，范围 1024~131072），取代个股分析写死的 `max_output_tokens=8192`；推理模型的思考 tokens 计入该上限，思考强度高时可调大避免 JSON 截断（`invalid_json`）。输出用满上限时记录 `[LLM输出上限]` 警告（含思考 tokens 数）便于排查。GitHub Actions 每日分析默认 `16384`。
-- [改进] 新增 `LLM_ANALYSIS_TIMEOUT_SEC`（默认 `0`=不设超时，保持原行为），为个股分析的 LLM 请求设置超时，超时后切换到下一个备用模型，避免供应商连接卡住导致单只股票长时间无响应（曾出现 `Connection timed out after None seconds` 与单只股票卡住 38 分钟）。GitHub Actions 每日分析默认 `420` 秒。
+- [改进] 新增 `LLM_ANALYSIS_TIMEOUT_SEC`（默认 `0`=不设超时，保持原行为），为个股分析与大盘复盘等文本生成的 LLM 请求设置超时，超时后切换到下一个备用模型，避免供应商连接卡住导致单只股票长时间无响应（曾出现 `Connection timed out after None seconds` 与单只股票卡住 38 分钟）。GitHub Actions 每日分析默认 `420` 秒。
 - [修复] Docker 构建与启动入口在 ARM64 架构下默认设置 `OPENBLAS_CORETYPE=ARMV8`（保留用户显式覆盖且不影响 x86_64），修复 Apple Silicon Linux 虚拟机因 OpenBLAS SME 指令分发导致 `Illegal instruction (exit code 132)` 崩溃的问题，并补充部署排障说明。
 
 - [修复] 关闭 LiteLLM 逐 chunk 的 streaming success logging（本项目未注册 LiteLLM callback，用量统计不受影响），修复 Windows 上每个流式 chunk 新建事件循环与回环 socketpair、全局线程池卡在 `accept()`，导致 CLI 打印「程序执行完成」后进程不退出且额外占用大量 CPU 的问题。
