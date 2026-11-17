@@ -118,6 +118,8 @@ class MarketLightReviewResult:
     report: str
     market_light_snapshot: Optional[Dict[str, Any]]
     structured_payload: Dict[str, Any] = field(default_factory=dict)
+    # True when the report is the built-in template (no usable LLM output).
+    template_fallback: bool = False
 
 
 class MarketAnalyzer:
@@ -822,6 +824,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             大盘复盘报告文本
         """
+        self._last_review_template_fallback = False
         backend_error = self._get_analyzer_generation_backend_config_error()
         if backend_error is not None:
             logger.error(
@@ -845,6 +848,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "[大盘] %s action=generate_review status=fallback_template reason=no_analyzer",
                 self._log_context(),
             )
+            self._last_review_template_fallback = True
             return self._with_tw_index_coverage(self._generate_template_review(overview, news), overview)
 
         # 构建 Prompt
@@ -935,6 +939,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "[大盘] %s action=generate_review status=fallback_template reason=empty_llm_response",
             self._log_context(),
         )
+        self._last_review_template_fallback = True
         return self._with_tw_index_coverage(self._generate_template_review(overview, news), overview)
 
     def _tw_index_coverage_lines(self, overview: MarketOverview) -> List[str]:
@@ -2128,6 +2133,7 @@ Market conditions can change quickly. The data above is for reference only and d
             report=report,
             market_light_snapshot=snapshot,
             structured_payload=structured_payload,
+            template_fallback=bool(getattr(self, "_last_review_template_fallback", False)),
         )
 
     def _merge_persisted_market_intelligence(self, news: List) -> List:

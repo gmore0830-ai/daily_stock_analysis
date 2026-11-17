@@ -13,9 +13,11 @@
 import logging
 import inspect
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 import uuid
 
 from src.config import get_config
@@ -50,6 +52,48 @@ _MARKET_REVIEW_MARKETS = (
     ('tw', 'tw_title', '台股'),
 )
 _MARKET_REVIEW_REGION_ORDER = MARKET_REVIEW_REGION_ORDER
+
+
+# Per-run reuse of single-region reviews for multi-region (e.g. "tw,us") runs.
+# During stock analysis, DailyMarketContextService generates one review per
+# region under query_id "market_context_<run_query_id>_<region>". The final
+# combined review of the same run would otherwise call the LLM again for every
+# region. Results are kept in-process only, keyed by (run_query_id, region),
+# consumed once, and bounded so long-running services cannot grow it.
+_RUN_SCOPED_REVIEW_MAX_ENTRIES = 32
+_RUN_SCOPED_REVIEW_QUERY_ID_RE = re.compile(r"^market_context_(?P<run_id>.+)_(?P<region>[a-z]{2})$")
+_RUN_SCOPED_REVIEWS: "OrderedDict[Tuple[str, str], Any]" = OrderedDict()
+_RUN_SCOPED_REVIEWS_LOCK = threading.Lock()
+
+
+def _remember_run_scoped_review(query_id: Optional[str], region: str, review_result: Any) -> None:
+    """Keep a successful per-region context review for the run's final combined review."""
+    match = _RUN_SCOPED_REVIEW_QUERY_ID_RE.match(str(query_id or ""))
+    if match is None or match.group("region") != region:
+        return
+    if not getattr(review_result, "report", None) or getattr(review_result, "template_fallback", False):
+        return
+    key = (match.group("run_id"), region)
+    with _RUN_SCOPED_REVIEWS_LOCK:
+        _RUN_SCOPED_REVIEWS[key] = review_result
+        _RUN_SCOPED_REVIEWS.move_to_end(key)
+        while len(_RUN_SCOPED_REVIEWS) > _RUN_SCOPED_REVIEW_MAX_ENTRIES:
+            _RUN_SCOPED_REVIEWS.popitem(last=False)
+
+
+def _take_run_scoped_review(query_id: Optional[str], region: str) -> Any:
+    """Pop the per-region review generated earlier in this run, if any."""
+    run_id = str(query_id or "").strip()
+    if not run_id:
+        return None
+    with _RUN_SCOPED_REVIEWS_LOCK:
+        return _RUN_SCOPED_REVIEWS.pop((run_id, region), None)
+
+
+def _clear_run_scoped_reviews() -> None:
+    """Clear the per-run review cache. Intended for tests."""
+    with _RUN_SCOPED_REVIEWS_LOCK:
+        _RUN_SCOPED_REVIEWS.clear()
 
 
 @dataclass
@@ -242,13 +286,23 @@ def run_market_review(
                     mkt,
                     label,
                 )
-                mkt_analyzer = MarketAnalyzer(
-                    search_service=search_service,
-                    analyzer=analyzer,
-                    region=mkt,
-                    config=runtime_config,
-                )
-                review_result = mkt_analyzer.run_daily_review_with_snapshot()
+                review_result = _take_run_scoped_review(query_id, mkt)
+                if review_result is not None:
+                    logger.info(
+                        "[MarketReview] component=market_review action=reuse_run_context "
+                        "trigger_source=%s query_id=%s region=%s",
+                        trigger_source,
+                        history_query_id,
+                        mkt,
+                    )
+                else:
+                    mkt_analyzer = MarketAnalyzer(
+                        search_service=search_service,
+                        analyzer=analyzer,
+                        region=mkt,
+                        config=runtime_config,
+                    )
+                    review_result = mkt_analyzer.run_daily_review_with_snapshot()
                 mkt_report = review_result.report
                 _collect_market_light_snapshot(
                     market_light_snapshots,
@@ -288,6 +342,7 @@ def run_market_review(
             )
             review_result = market_analyzer.run_daily_review_with_snapshot()
             review_report = review_result.report
+            _remember_run_scoped_review(query_id, run_region, review_result)
             market_light_snapshots = {}
             _collect_market_light_snapshot(
                 market_light_snapshots,

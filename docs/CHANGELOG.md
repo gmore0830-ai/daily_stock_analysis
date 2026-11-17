@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 多市场大盘复盘（如 `MARKET_REVIEW_REGION=tw,us`）的最终合并复盘会复用同一轮个股分析中已生成的各区域复盘上下文，不再对每个区域重复调用 LLM（每轮少 1 次/区域）；模板降级结果不复用，仍会重新生成。
 - [修复] 每日 Actions 设置 `TZ`（默认 `Asia/Taipei`，可用仓库变量覆盖），修复台湾时间 00:00～08:00 触发时报告日期、文件名与日志文件名落在前一天的问题。
 - [改进] 台/日/韩股查询股票名称时跳过已知不支持该市场的 A 股数据源（如 Baostock），避免无效登录、日志噪音与额外耗时。
 - [改进] 新增 `PYTDX_ENABLED`（默认 `true`），设为 `false` 时不注册 PytdxFetcher；每日 Actions 默认关闭，避免公共通达信服务器不可达时反复连接超时拖慢港/美/台股分析。
