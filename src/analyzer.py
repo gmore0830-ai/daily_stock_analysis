@@ -10,10 +10,12 @@ A股自选股智能分析系统 - AI分析层
 3. 解析 LLM 响应为结构化 AnalysisResult
 """
 
+import contextvars
 import json
 import logging
 import math
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable, Union
@@ -132,6 +134,47 @@ def _resolve_analysis_timeout_sec(config: Any) -> Optional[float]:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
     return float(value)
+
+
+class _ModelAttemptDeadlineExceeded(TimeoutError):
+    """One model attempt (stream + non-stream retry) exceeded its wall-clock budget."""
+
+
+def _run_with_deadline(fn: Callable[[], Any], deadline_sec: Optional[float], *, label: str) -> Any:
+    """Run ``fn`` and give up after ``deadline_sec`` seconds of wall-clock time.
+
+    The transport-level ``timeout`` passed to LiteLLM is a per-read idle timeout,
+    so a provider that keeps trickling bytes (or a hung non-stream fallback) can
+    hold a request far longer than configured. This enforces a hard total limit.
+    On expiry the worker thread is abandoned (daemon, cannot be killed) and the
+    caller moves on to the next fallback model. ``None`` runs ``fn`` inline.
+    """
+    if deadline_sec is None:
+        return fn()
+    if deadline_sec <= 0:
+        raise _ModelAttemptDeadlineExceeded(f"{label} exceeded hard deadline (no time left)")
+
+    outcome: Dict[str, Any] = {}
+    finished = threading.Event()
+    ctx = contextvars.copy_context()
+
+    def _runner() -> None:
+        try:
+            outcome["value"] = ctx.run(fn)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+            outcome["error"] = exc
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=_runner, name=f"llm-deadline-{label}", daemon=True)
+    worker.start()
+    if not finished.wait(deadline_sec):
+        raise _ModelAttemptDeadlineExceeded(
+            f"{label} exceeded hard deadline of {deadline_sec:.1f}s"
+        )
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("value")
 
 
 def _warn_if_output_budget_exhausted(
@@ -3755,6 +3798,29 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             if usage_provider:
                 last_provider = usage_provider
 
+            # Hard wall-clock budget for this model (stream attempt + non-stream retry combined).
+            attempt_deadline_at: Optional[float] = None
+            if (
+                isinstance(requested_timeout, (int, float))
+                and not isinstance(requested_timeout, bool)
+                and requested_timeout > 0
+            ):
+                attempt_deadline_at = time.monotonic() + float(requested_timeout)
+
+            def _remaining_attempt_budget() -> Optional[float]:
+                if attempt_deadline_at is None:
+                    return None
+                return attempt_deadline_at - time.monotonic()
+
+            attempt_alive = [True]
+            attempt_progress_callback = stream_progress_callback
+            if stream_progress_callback is not None and attempt_deadline_at is not None:
+                def attempt_progress_callback(*cb_args: Any, **cb_kwargs: Any) -> Any:
+                    # An abandoned (timed-out) worker must not keep reporting progress.
+                    if attempt_alive[0]:
+                        return stream_progress_callback(*cb_args, **cb_kwargs)
+                    return None
+
             try:
                 def _attach_usage_audit(
                     usage: Dict[str, Any],
@@ -3834,7 +3900,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 _stream_usage: Dict[str, Any] = {}
 
                 if model_stream:
-                    try:
+                    def _stream_attempt() -> Tuple[str, Dict[str, Any]]:
                         stream_response = call_litellm_with_param_recovery(
                             lambda kwargs: self._dispatch_litellm_completion(
                                 model,
@@ -3849,13 +3915,24 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                             cache_recovery=False,
                             logger=logger,
                         )
-                        _stream_text, _stream_usage = self._consume_litellm_stream(
+                        return self._consume_litellm_stream(
                             stream_response,
                             model=model,
                             usage_model=usage_model,
                             provider=usage_provider,
-                            progress_callback=stream_progress_callback,
+                            progress_callback=attempt_progress_callback,
                         )
+
+                    try:
+                        _stream_text, _stream_usage = _run_with_deadline(
+                            _stream_attempt,
+                            _remaining_attempt_budget(),
+                            label=model,
+                        )
+                    except _ModelAttemptDeadlineExceeded:
+                        # Budget spent: skip the non-stream retry and move to the next model.
+                        attempt_alive[0] = False
+                        raise
                     except _LiteLLMStreamError as exc:
                         safe_error = self._sanitize_litellm_exception_text(exc, config=config, model=model)
                         if exc.partial_received:
@@ -3896,18 +3973,22 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         response_validator(_stream_text)
                     return _stream_text, actual_model, _stream_usage
 
-                response = call_litellm_with_param_recovery(
-                    lambda kwargs: self._dispatch_litellm_completion(
-                        model,
-                        kwargs,
-                        config=config,
-                        use_channel_router=use_channel_router,
-                        router_model_names=router_model_names,
+                response = _run_with_deadline(
+                    lambda: call_litellm_with_param_recovery(
+                        lambda kwargs: self._dispatch_litellm_completion(
+                            model,
+                            kwargs,
+                            config=config,
+                            use_channel_router=use_channel_router,
+                            router_model_names=router_model_names,
+                        ),
+                        model=model,
+                        call_kwargs=call_kwargs,
+                        model_list=recovery_model_list,
+                        logger=logger,
                     ),
-                    model=model,
-                    call_kwargs=call_kwargs,
-                    model_list=recovery_model_list,
-                    logger=logger,
+                    _remaining_attempt_budget(),
+                    label=model,
                 )
 
                 response_model, response_provider = self._resolve_response_model_provider(
