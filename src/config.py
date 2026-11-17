@@ -1024,6 +1024,8 @@ class Config:
 
     # Unified temperature for all LLM calls (LLM_TEMPERATURE); legacy per-provider temps are fallback only
     llm_temperature: float = 0.7
+    # 个股分析单次 LLM 输出上限（含推理模型的思考 tokens）
+    llm_analysis_max_output_tokens: int = 8192
 
     # Provider prompt-cache controls. These do not control provider implicit cache.
     llm_prompt_cache_telemetry_enabled: bool = True
@@ -1988,6 +1990,13 @@ class Config:
             anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
             anthropic_temperature=parse_env_float(os.getenv('ANTHROPIC_TEMPERATURE'), 0.7, field_name='ANTHROPIC_TEMPERATURE'),
             anthropic_max_tokens=parse_env_int(os.getenv('ANTHROPIC_MAX_TOKENS'), 8192, field_name='ANTHROPIC_MAX_TOKENS', minimum=1),
+            llm_analysis_max_output_tokens=parse_env_int(
+                os.getenv('LLM_ANALYSIS_MAX_OUTPUT_TOKENS'),
+                8192,
+                field_name='LLM_ANALYSIS_MAX_OUTPUT_TOKENS',
+                minimum=1024,
+                maximum=131072,
+            ),
             # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
             # Within the OpenAI-compatible layer: AIHUBMIX_KEY takes priority over OPENAI_API_KEY.
             # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).

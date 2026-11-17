@@ -110,6 +110,49 @@ from src.market_structure_prompt import format_market_structure_prompt_section
 logger = logging.getLogger(__name__)
 
 
+_DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS = 8192
+
+
+def _resolve_analysis_max_output_tokens(config: Any) -> int:
+    """Return the stock-analysis output budget (LLM_ANALYSIS_MAX_OUTPUT_TOKENS)."""
+    value = getattr(config, "llm_analysis_max_output_tokens", None)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return _DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS
+    return value
+
+
+def _warn_if_output_budget_exhausted(
+    usage: Optional[Dict[str, Any]],
+    max_output_tokens: int,
+    *,
+    stock_label: str,
+) -> bool:
+    """Log a hint when the completion used the whole output budget.
+
+    Reasoning models count thinking tokens against the output budget, so a
+    truncated JSON report usually shows up as completion_tokens == budget.
+    Diagnostic only: it never changes the request or the parsed result.
+    """
+    if not isinstance(usage, dict):
+        return False
+    completion = usage.get("completion_tokens")
+    if isinstance(completion, bool) or not isinstance(completion, (int, float)):
+        return False
+    if completion < max_output_tokens:
+        return False
+    details = usage.get("completion_tokens_details")
+    reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    logger.warning(
+        "[LLM输出上限] %s: completion_tokens=%s 已用满上限 %s（其中思考 tokens=%s），"
+        "JSON 报告可能被截断；可提高 LLM_ANALYSIS_MAX_OUTPUT_TOKENS 或调低 GEMINI_THINKING_LEVEL",
+        stock_label,
+        int(completion),
+        max_output_tokens,
+        reasoning if reasoning is not None else "未知",
+    )
+    return True
+
+
 def _describe_llm_result_model(
     configured_model: str,
     model_used: Optional[str],
@@ -4213,9 +4256,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
 
             # 设置生成配置
+            analysis_max_output_tokens = _resolve_analysis_max_output_tokens(config)
             generation_config = {
                 "temperature": config.llm_temperature,
-                "max_output_tokens": 8192,
+                "max_output_tokens": analysis_max_output_tokens,
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
@@ -4262,6 +4306,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 else:
                     response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
                 logger.info(f"[LLM返回 预览]\n{response_preview}")
+                _warn_if_output_budget_exhausted(
+                    llm_usage,
+                    analysis_max_output_tokens,
+                    stock_label=f"{name}({code})",
+                )
                 if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     logger.debug(
                         f"=== {model_used or model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
