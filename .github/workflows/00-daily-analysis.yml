@@ -135,6 +135,8 @@ jobs:
           GEMINI_THINKING_LEVEL: ${{ vars.GEMINI_THINKING_LEVEL || secrets.GEMINI_THINKING_LEVEL || '' }}
           # 個股分析單次 LLM 輸出上限（含思考 tokens）：思考 high 時 8192 會被思考吃掉導致 JSON 截斷（invalid_json），預設 16384
           LLM_ANALYSIS_MAX_OUTPUT_TOKENS: ${{ vars.LLM_ANALYSIS_MAX_OUTPUT_TOKENS || secrets.LLM_ANALYSIS_MAX_OUTPUT_TOKENS || '16384' }}
+          # 個股分析單次 LLM 請求逾時（秒）：未設時連線卡住會一直等（曾單檔卡 38 分鐘），逾時後改用下一個備用模型。Hydrogen 正常最慢約 320 秒，預設 420
+          LLM_ANALYSIS_TIMEOUT_SEC: ${{ vars.LLM_ANALYSIS_TIMEOUT_SEC || secrets.LLM_ANALYSIS_TIMEOUT_SEC || '420' }}
           # TG 指定查股（極速單查）專用模型，可用 repo 變數覆蓋
           TG_GEMINI_MODEL: ${{ vars.TG_GEMINI_MODEL || 'gemini-3.8-flash' }}
           TG_GEMINI_MODEL_FALLBACK: ${{ vars.TG_GEMINI_MODEL_FALLBACK || 'gemini-3.6-flash' }}

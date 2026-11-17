@@ -1026,6 +1026,8 @@ class Config:
     llm_temperature: float = 0.7
     # 个股分析单次 LLM 输出上限（含推理模型的思考 tokens）
     llm_analysis_max_output_tokens: int = 8192
+    # 个股分析单次 LLM 请求超时（秒），0=不设超时（沿用 LiteLLM/供应商默认）
+    llm_analysis_timeout_sec: float = 0.0
 
     # Provider prompt-cache controls. These do not control provider implicit cache.
     llm_prompt_cache_telemetry_enabled: bool = True
@@ -1996,6 +1998,12 @@ class Config:
                 field_name='LLM_ANALYSIS_MAX_OUTPUT_TOKENS',
                 minimum=1024,
                 maximum=131072,
+            ),
+            llm_analysis_timeout_sec=parse_env_float(
+                os.getenv('LLM_ANALYSIS_TIMEOUT_SEC'),
+                0.0,
+                field_name='LLM_ANALYSIS_TIMEOUT_SEC',
+                minimum=0.0,
             ),
             # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
             # Within the OpenAI-compatible layer: AIHUBMIX_KEY takes priority over OPENAI_API_KEY.

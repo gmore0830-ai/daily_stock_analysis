@@ -121,6 +121,19 @@ def _resolve_analysis_max_output_tokens(config: Any) -> int:
     return value
 
 
+def _resolve_analysis_timeout_sec(config: Any) -> Optional[float]:
+    """Return the per-request timeout for stock analysis (LLM_ANALYSIS_TIMEOUT_SEC).
+
+    None means "no explicit timeout" (the historical behaviour). Without a
+    timeout a stalled provider connection can hang a stock for 30+ minutes
+    instead of failing over to the next fallback model.
+    """
+    value = getattr(config, "llm_analysis_timeout_sec", None)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
 def _warn_if_output_budget_exhausted(
     usage: Optional[Dict[str, Any]],
     max_output_tokens: int,
@@ -4261,6 +4274,9 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 "temperature": config.llm_temperature,
                 "max_output_tokens": analysis_max_output_tokens,
             }
+            analysis_timeout_sec = _resolve_analysis_timeout_sec(config)
+            if analysis_timeout_sec is not None:
+                generation_config["timeout"] = analysis_timeout_sec
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
             _emit_progress(68, f"{name}：LLM 已接收请求，等待响应")
