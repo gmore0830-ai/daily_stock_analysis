@@ -470,3 +470,25 @@ def signal_attribution_has_content(signal_attr: Any) -> bool:
     if any(value != 0 for _, value in signal_attribution_weight_items(signal_attr)):
         return True
     return any(bool(signal_attr.get(key)) for key in SIGNAL_ATTRIBUTION_SIGNAL_KEYS)
+
+
+def format_percent_number(value: Any, default: str = "N/A", digits: int = 2) -> str:
+    """Format a percentage value for report tables without the trailing ``%``.
+
+    Numeric values (including numeric strings such as ``"1.5"`` or ``"1.5%"``)
+    are rounded to ``digits`` decimals so tiny floats never render in
+    scientific notation (e.g. ``1.65e-06`` -> ``0.00``). Non-numeric text is
+    passed through unchanged; missing values fall back to ``default``.
+    """
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, str) and not value.strip():
+        return default
+    number = _safe_float(value)
+    if number is None or not math.isfinite(number):
+        return str(value).strip()
+    text = f"{number:.{digits}f}"
+    # Avoid "-0.00" for tiny negative values.
+    if float(text) == 0:
+        text = f"{0:.{digits}f}"
+    return text

@@ -64,6 +64,7 @@ from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
 from src.formatters import strip_hidden_markdown_metadata
 from src.utils.data_processing import (
+    format_percent_number,
     signal_attribution_has_content,
     signal_attribution_weight_items,
     normalize_model_used,
@@ -1452,7 +1453,7 @@ class NotificationService(
                             f"| {labels['ma5_label']} | {price_data.get('ma5', 'N/A')} |",
                             f"| {labels['ma10_label']} | {price_data.get('ma10', 'N/A')} |",
                             f"| {labels['ma20_label']} | {price_data.get('ma20', 'N/A')} |",
-                            f"| {labels['bias_ma5_label']} | {price_data.get('bias_ma5', 'N/A')}% {bias_status} |",
+                            f"| {labels['bias_ma5_label']} | {format_percent_number(price_data.get('bias_ma5'))}% {bias_status} |",
                             f"| {labels['support_level_label']} | {price_data.get('support_level', 'N/A')} |",
                             f"| {labels['resistance_level_label']} | {price_data.get('resistance_level', 'N/A')} |",
                             "",
