@@ -472,6 +472,34 @@ def signal_attribution_has_content(signal_attr: Any) -> bool:
     return any(bool(signal_attr.get(key)) for key in SIGNAL_ATTRIBUTION_SIGNAL_KEYS)
 
 
+_MISSING_DISPLAY_TOKENS = frozenset({"none", "null", "nan", "n/a", "na"})
+
+
+def format_display_value(value: Any, default: str = "N/A") -> str:
+    """Render an LLM/dashboard field for reports, mapping missing values to ``default``.
+
+    ``dict.get(key, default)`` only covers absent keys; LLM JSON often sends the
+    key with ``null`` (or the literal text ``"None"``), which would otherwise
+    render as ``None`` in the report.
+    """
+    if value is None:
+        return default
+    if isinstance(value, float) and not math.isfinite(value):
+        return default
+    text = str(value).strip()
+    if not text or text.lower() in _MISSING_DISPLAY_TOKENS:
+        return default
+    return text
+
+
+def format_percent_display(value: Any, default: str = "N/A", digits: int = 2) -> str:
+    """Like :func:`format_percent_number` but appends ``%`` only when a value exists."""
+    text = format_percent_number(value, default=default, digits=digits)
+    if text == default or text.lower() in _MISSING_DISPLAY_TOKENS:
+        return default
+    return text if text.endswith("%") else f"{text}%"
+
+
 def format_percent_number(value: Any, default: str = "N/A", digits: int = 2) -> str:
     """Format a percentage value for report tables without the trailing ``%``.
 

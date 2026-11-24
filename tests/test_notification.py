@@ -1127,6 +1127,37 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("*分析模型：gemini/gemini-2.5-flash*", out)
 
     @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_renders_null_volume_fields_as_na(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="2313.TW",
+            name="华通",
+            sentiment_score=38,
+            trend_prediction="看空",
+            operation_advice="观望",
+            analysis_summary="空头排列",
+            dashboard={
+                "data_perspective": {
+                    "price_position": {"current_price": 169.5, "ma5": None, "bias_ma5": None},
+                    "volume_analysis": {
+                        "volume_ratio": None,
+                        "volume_status": "缩量",
+                        "turnover_rate": "None",
+                        "volume_meaning": None,
+                    },
+                }
+            },
+        )
+
+        out = service.generate_dashboard_report([result], report_date="2026-11-24")
+
+        self.assertNotIn("None", out)
+        self.assertNotIn("N/A%", out)
+        self.assertIn("量比 N/A (缩量)", out)
+        self.assertIn("换手率 N/A", out)
+
+    @mock.patch("src.notification.get_config")
     def test_generate_dashboard_report_shows_phase_decision_in_default_renderer(
         self, mock_get_config: mock.MagicMock
     ):

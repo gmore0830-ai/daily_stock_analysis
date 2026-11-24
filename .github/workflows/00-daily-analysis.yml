@@ -740,6 +740,8 @@ jobs:
               '止損': '停損',
               '儀表盤': '儀表板',
               '儀錶盤': '儀表板',
+              # s2twp 會把「台」轉成「臺」（臺股、臺積電、新臺幣），統一改回常用的「台」
+              '臺': '台',
               'TAIWAN SEMICONDUCTOR MANUFACTUR': '台積電',
               'COMPEQ MANUFACTURING': '華通',
               'CENTRAL REINSURANCE': '中再保',

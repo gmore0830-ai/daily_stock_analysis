@@ -64,6 +64,8 @@ from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
 from src.formatters import strip_hidden_markdown_metadata
 from src.utils.data_processing import (
+    format_display_value,
+    format_percent_display,
     format_percent_number,
     signal_attribution_has_content,
     signal_attribution_weight_items,
@@ -1438,34 +1440,40 @@ class NotificationService(
                             else f"❌ {labels['no_label']}"
                         )
                         report_lines.extend([
-                            f"**{labels['ma_alignment_label']}**: {trend_data.get('ma_alignment', 'N/A')} | "
+                            f"**{labels['ma_alignment_label']}**: {format_display_value(trend_data.get('ma_alignment'))} | "
                             f"{labels['bullish_alignment_label']}: {is_bullish} | "
-                            f"{labels['trend_strength_label']}: {trend_data.get('trend_score', 'N/A')}/100",
+                            f"{labels['trend_strength_label']}: {format_display_value(trend_data.get('trend_score'))}/100",
                             "",
                         ])
                     # 价格位置
                     if price_data:
-                        bias_status = price_data.get('bias_status', 'N/A')
+                        bias_status = format_display_value(price_data.get('bias_status'), default='')
+                        bias_text = f"{format_percent_display(price_data.get('bias_ma5'))} {bias_status}".strip()
                         report_lines.extend([
                             f"| {labels['price_metrics_label']} | {labels['current_price_label']} |",
                             "|---------|------|",
-                            f"| {labels['current_price_label']} | {price_data.get('current_price', 'N/A')} |",
-                            f"| {labels['ma5_label']} | {price_data.get('ma5', 'N/A')} |",
-                            f"| {labels['ma10_label']} | {price_data.get('ma10', 'N/A')} |",
-                            f"| {labels['ma20_label']} | {price_data.get('ma20', 'N/A')} |",
-                            f"| {labels['bias_ma5_label']} | {format_percent_number(price_data.get('bias_ma5'))}% {bias_status} |",
-                            f"| {labels['support_level_label']} | {price_data.get('support_level', 'N/A')} |",
-                            f"| {labels['resistance_level_label']} | {price_data.get('resistance_level', 'N/A')} |",
+                            f"| {labels['current_price_label']} | {format_display_value(price_data.get('current_price'))} |",
+                            f"| {labels['ma5_label']} | {format_display_value(price_data.get('ma5'))} |",
+                            f"| {labels['ma10_label']} | {format_display_value(price_data.get('ma10'))} |",
+                            f"| {labels['ma20_label']} | {format_display_value(price_data.get('ma20'))} |",
+                            f"| {labels['bias_ma5_label']} | {bias_text} |",
+                            f"| {labels['support_level_label']} | {format_display_value(price_data.get('support_level'))} |",
+                            f"| {labels['resistance_level_label']} | {format_display_value(price_data.get('resistance_level'))} |",
                             "",
                         ])
                     # 量能分析
                     if vol_data:
-                        report_lines.extend([
-                            f"**{labels['volume_label']}**: {labels['volume_ratio_label']} {vol_data.get('volume_ratio', 'N/A')} ({vol_data.get('volume_status', '')}) | "
-                            f"{labels['turnover_rate_label']} {vol_data.get('turnover_rate', 'N/A')}%",
-                            f"💡 *{vol_data.get('volume_meaning', '')}*",
-                            "",
-                        ])
+                        volume_status = format_display_value(vol_data.get('volume_status'), default='')
+                        volume_status_text = f" ({volume_status})" if volume_status else ""
+                        volume_meaning = format_display_value(vol_data.get('volume_meaning'), default='')
+                        report_lines.append(
+                            f"**{labels['volume_label']}**: {labels['volume_ratio_label']} "
+                            f"{format_display_value(vol_data.get('volume_ratio'))}{volume_status_text} | "
+                            f"{labels['turnover_rate_label']} {format_percent_display(vol_data.get('turnover_rate'))}"
+                        )
+                        if volume_meaning:
+                            report_lines.append(f"💡 *{volume_meaning}*")
+                        report_lines.append("")
                     # 筹码结构
                     if chip_data:
                         if is_chip_structure_unavailable(chip_data):
