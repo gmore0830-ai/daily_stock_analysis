@@ -295,3 +295,9 @@ def test_tw_overview_uses_twse_breadth_and_sectors(_no_live_tw_market_data):
     assert "类股领涨: 電子零組件(+8.31%)" in prompt
     assert "两市成交额" not in prompt
     assert "概念领涨" not in prompt
+
+
+def test_tw_sector_block_is_not_duplicated_by_payload_merge():
+    from src.core.market_review import _markdown_contains_sector_markers
+
+    assert _markdown_contains_sector_markers("#### 类股领涨 Top 5\n| 排名 | 类股 | 涨跌幅 |")
