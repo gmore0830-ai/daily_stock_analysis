@@ -102,8 +102,9 @@ TW_PROFILE = MarketProfile(
         "台股 半導體 台積電 市場新聞",
     ],
     prompt_index_hint="分析台湾加权指数、柜买指数走势；缺失指数时说明覆盖范围，不推断未提供的行情",
-    has_market_stats=False,
-    has_sector_rankings=False,
+    # 上市涨跌家数/涨跌停家数/成交金额与类股排行来自 TWSE 官方（data_provider/tw_market_fetcher.py）
+    has_market_stats=True,
+    has_sector_rankings=True,
 )
 
 

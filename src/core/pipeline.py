@@ -3581,7 +3581,12 @@ class StockAnalysisPipeline:
 
         # 冻结本轮运行的统一参考时间，避免跨市场收盘边界时同批股票使用不同目标交易日。
         resume_reference_time = current_time or datetime.now(timezone.utc)
-        
+
+        # 台股三大法人整市场表（TWSE T86 / TPEx）背景预取，避免逐股阶段因下载慢而逾时
+        prefetch_tw = getattr(self.fetcher_manager, "prefetch_tw_institutional", None)
+        if callable(prefetch_tw) and not dry_run:
+            prefetch_tw(stock_codes)
+
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
         if len(stock_codes) >= 5:

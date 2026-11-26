@@ -3365,11 +3365,66 @@ class DataFetcherManager:
                 data = fetcher.get_main_indices(region=region)
                 if data:
                     logger.info(f"[{fetcher.name}] 获取指数行情成功")
-                    return data
+                    return self._supplement_tw_indices(data) if region == "tw" else data
             except Exception as e:
                 logger.warning(f"[{fetcher.name}] 获取指数行情失败: {e}")
                 continue
-        return []
+        return self._supplement_tw_indices([]) if region == "tw" else []
+
+    def prefetch_tw_institutional(self, stock_codes: List[str]) -> None:
+        """Start a background warm-up of the 三大法人 whole-market tables (fail-open).
+
+        The per-stock fundamental stage only waits a few seconds for the institution
+        block; the TPEx whole-market download can take longer than that from cloud
+        runners, so fetch it once up front and let per-stock lookups hit the cache.
+        """
+        markets = []
+        for code in stock_codes or []:
+            upper = str(code or "").strip().upper()
+            if upper.endswith(".TWO"):
+                markets.append("tpex")
+            elif upper.endswith(".TW"):
+                markets.append("twse")
+        if not markets:
+            return
+        try:
+            fetcher = getattr(self, "_tw_institutional_fetcher", None)
+            if fetcher is None:
+                from data_provider.tw_institutional_fetcher import TwInstitutionalFetcher
+
+                fetcher = TwInstitutionalFetcher()
+                self._tw_institutional_fetcher = fetcher
+            fetcher.prefetch(markets)
+        except Exception as exc:  # noqa: BLE001 - never block the run on a warm-up
+            logger.info("[tw-inst] prefetch init failed: %s", exc)
+
+    def _supplement_tw_indices(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Fill Taiwan index gaps from official sources (fail-open).
+
+        yfinance often has no ^TWOII bar and never reports TAIEX turnover; take the
+        櫃買指數 from the TPEx OpenAPI and the 加權指數 turnover from TWSE MI_INDEX.
+        """
+        try:
+            from data_provider.tw_market_fetcher import get_tw_market_fetcher
+
+            tw = get_tw_market_fetcher()
+            items = list(data or [])
+            codes = {str(item.get("code", "")).upper() for item in items}
+            if "TWOII" not in codes:
+                tpex = tw.get_tpex_index()
+                if tpex:
+                    items.append(tpex)
+                    logger.info("[tw-market] TWOII filled from TPEx OpenAPI: %s", tpex.get("current"))
+            for item in items:
+                if str(item.get("code", "")).upper() == "TWII" and not item.get("amount"):
+                    amount = tw.get_twse_total_amount()
+                    if amount:
+                        item["amount"] = amount
+                        logger.info("[tw-market] TWII turnover filled from TWSE: %.0f", amount)
+            return items
+        except Exception as exc:  # noqa: BLE001 - never break the review on supplements
+            logger.info("[tw-market] index supplement failed: %s", exc)
+            return list(data or [])
 
     def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""

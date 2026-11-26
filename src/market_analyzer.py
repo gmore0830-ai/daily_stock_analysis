@@ -328,14 +328,16 @@ class MarketAnalyzer:
         if self.region == "kr":
             return "KRW bn" if self._get_review_language() == "en" else "十亿韩元"
         if self.region == "tw":
-            return "TWD bn" if self._get_review_language() == "en" else "十亿新台币"
+            return "TWD 100m" if self._get_review_language() == "en" else "亿新台币"
         return "CNY 100m" if self._get_review_language() == "en" else "亿"
 
     def _format_turnover_value(self, amount_raw: float) -> str:
         """Format raw turnover according to market-specific units."""
         if amount_raw == 0.0:
             return "N/A"
-        if self.region in ("us", "hk", "jp", "kr", "tw"):
+        if self.region == "tw":
+            return f"{amount_raw / 1e8:.0f}"
+        if self.region in ("us", "hk", "jp", "kr"):
             return f"{amount_raw / 1e9:.2f}"
         if amount_raw > 1e6:
             return f"{amount_raw / 1e8:.0f}"
@@ -599,12 +601,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         # 1. 获取主要指数行情（按 region 切换 A 股/美股）
         overview.indices = self._get_main_indices()
 
+        tw_session = self._tw_session_date(now) if self.region == "tw" else ""
+
         # 2. 获取涨跌统计（A 股有，美股无等效数据）
-        if self.profile.has_market_stats:
+        if self.region == "tw":
+            self._get_tw_market_statistics(overview, tw_session)
+        elif self.profile.has_market_stats:
             self._get_market_statistics(overview)
 
-        # 3. 获取板块涨跌榜（A 股有，美股暂无）
-        if self.profile.has_sector_rankings:
+        # 3. 获取板块涨跌榜（A 股有，美股暂无；台股为 TWSE 上市类股，无概念榜）
+        if self.region == "tw":
+            self._get_tw_sector_rankings(overview, tw_session)
+        elif self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
             self._get_concept_rankings(overview)
         
@@ -687,6 +695,51 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         except Exception as e:
             logger.error("[大盘] %s action=get_market_stats status=failed error=%s", self._log_context(), e)
+
+    @staticmethod
+    def _tw_session_date(now: datetime) -> str:
+        """Last completed TW session (before the close / on holidays -> previous session)."""
+        try:
+            from src.core.trading_calendar import get_effective_trading_date
+
+            return get_effective_trading_date("tw", current_time=now).strftime('%Y%m%d')
+        except Exception:  # noqa: BLE001 - calendar failure: fall back to the local date
+            return now.strftime('%Y%m%d')
+
+    def _get_tw_market_statistics(self, overview: MarketOverview, date: str) -> None:
+        """上市涨跌家数 / 涨跌停家数 / 成交金额（TWSE MI_INDEX，fail-open）。"""
+        from data_provider.tw_market_fetcher import get_tw_market_fetcher
+
+        stats = get_tw_market_fetcher().get_twse_market_stats(date)
+        if not stats:
+            logger.warning("[大盘] %s action=get_market_stats status=empty source=TWSE", self._log_context())
+            return
+        overview.up_count = stats.get("up_count", 0)
+        overview.down_count = stats.get("down_count", 0)
+        overview.flat_count = stats.get("flat_count", 0)
+        overview.limit_up_count = stats.get("limit_up_count", 0)
+        overview.limit_down_count = stats.get("limit_down_count", 0)
+        overview.total_amount = stats.get("total_amount", 0.0)
+        logger.info(
+            "[大盘] %s action=get_market_stats status=success source=TWSE up=%s down=%s flat=%s "
+            "limit_up=%s limit_down=%s amount=%.0f亿",
+            self._log_context(), overview.up_count, overview.down_count, overview.flat_count,
+            overview.limit_up_count, overview.limit_down_count, overview.total_amount,
+        )
+
+    def _get_tw_sector_rankings(self, overview: MarketOverview, date: str) -> None:
+        """上市类股涨跌幅排行（TWSE MI_INDEX IND，fail-open）。"""
+        from data_provider.tw_market_fetcher import get_tw_market_fetcher
+
+        top, bottom = get_tw_market_fetcher().get_twse_sector_rankings(5, date)
+        if top or bottom:
+            overview.top_sectors, overview.bottom_sectors = top, bottom
+            logger.info(
+                "[大盘] %s action=get_sector_rankings status=success source=TWSE top=%s bottom=%s",
+                self._log_context(), [s["name"] for s in top], [s["name"] for s in bottom],
+            )
+        else:
+            logger.warning("[大盘] %s action=get_sector_rankings status=empty source=TWSE", self._log_context())
 
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
@@ -1301,7 +1354,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     "|------|------|------|",
                     f"| 上涨/下跌/平盘 | {overview.up_count} / {overview.down_count} / {overview.flat_count} | 上涨占比(不含平盘) {up_ratio:.1%} |",
                     f"| 涨停/跌停 | {overview.limit_up_count} / {overview.limit_down_count} | 涨跌停差 {limit_spread:+d} |",
-                    f"| 两市成交额 | {overview.total_amount:.0f} 亿 | {self._describe_turnover(overview.total_amount)} |",
+                    (
+                        f"| 上市成交金额 | {overview.total_amount:.0f} 亿 | {self._describe_tw_turnover(overview.total_amount)} |"
+                        if self.region == "tw"
+                        else f"| 两市成交额 | {overview.total_amount:.0f} 亿 | {self._describe_turnover(overview.total_amount)} |"
+                    ),
                 ]
             )
         return "\n".join(lines)
@@ -1471,8 +1528,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             append_ranking("#### Leading Concept Themes", "Concept", overview.top_concepts)
             append_ranking("#### Lagging Concept Themes", "Concept", overview.bottom_concepts)
         else:
-            append_ranking("#### 行业板块领涨 Top 5", "行业板块", overview.top_sectors)
-            append_ranking("#### 行业板块领跌 Top 5", "行业板块", overview.bottom_sectors)
+            sector_label = "类股" if self.region == "tw" else "行业板块"
+            append_ranking(f"#### {sector_label}领涨 Top 5", sector_label, overview.top_sectors)
+            append_ranking(f"#### {sector_label}领跌 Top 5", sector_label, overview.bottom_sectors)
             append_ranking("#### 概念板块领涨 Top 5", "概念板块", overview.top_concepts)
             append_ranking("#### 概念板块领跌 Top 5", "概念板块", overview.bottom_concepts)
         return "\n".join(lines)
@@ -1560,6 +1618,17 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     @staticmethod
     def _escape_markdown_link_label(value: str) -> str:
         return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+
+    @staticmethod
+    def _describe_tw_turnover(total_amount: float) -> str:
+        """台股上市成交金额（亿元）的粗略活跃度分级。"""
+        if total_amount >= 6000:
+            return "高活跃度"
+        if total_amount >= 3500:
+            return "中等活跃"
+        if total_amount > 0:
+            return "量能偏低"
+        return "暂无数据"
 
     @staticmethod
     def _describe_turnover(total_amount: float) -> str:
@@ -1783,22 +1852,31 @@ Concept leading: {top_concepts_text if top_concepts_text else "N/A"}
 Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 
             data_limit_lines = self._tw_index_coverage_lines(overview)
-            if not self.profile.has_market_stats:
+            if not self.profile.has_market_stats or (self.region == "tw" and not (overview.up_count or overview.down_count)):
                 data_limit_lines.append(
                     "- Market breadth, aggregate turnover, participation, and fund-flow signals are not available for this market."
                 )
-            if not self.profile.has_sector_rankings:
+            if not self.profile.has_sector_rankings or (self.region == "tw" and not (overview.top_sectors or overview.bottom_sectors)):
                 data_limit_lines.append("- Sector/theme ranking data is not available for this market.")
             if data_limit_lines:
                 data_limits_block = "## Data Limits\n" + "\n".join(data_limit_lines)
         else:
-            if self.profile.has_market_stats:
+            if self.region == "tw" and (overview.up_count or overview.down_count):
+                stats_block = f"""## 市场概况（上市股票，TWSE）
+- 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
+- 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
+- 上市成交金额: {overview.total_amount:.0f} 亿元（新台币）"""
+            elif self.profile.has_market_stats and self.region != "tw":
                 stats_block = f"""## 市场概况
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 两市成交额: {overview.total_amount:.0f} 亿元"""
 
-            if self.profile.has_sector_rankings:
+            if self.region == "tw" and (overview.top_sectors or overview.bottom_sectors):
+                sector_block = f"""## 类股表现（上市类股指数，TWSE）
+类股领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
+类股领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}"""
+            elif self.profile.has_sector_rankings and self.region != "tw":
                 sector_block = f"""## 板块表现
 行业领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
 行业领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}
@@ -1806,9 +1884,9 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 概念领跌: {bottom_concepts_text if bottom_concepts_text else "暂无数据"}"""
 
             data_limit_lines = self._tw_index_coverage_lines(overview)
-            if not self.profile.has_market_stats:
+            if not self.profile.has_market_stats or (self.region == "tw" and not (overview.up_count or overview.down_count)):
                 data_limit_lines.append("- 该市场暂无涨跌家数、涨跌停、成交额汇总、参与度或资金流信号。")
-            if not self.profile.has_sector_rankings:
+            if not self.profile.has_sector_rankings or (self.region == "tw" and not (overview.top_sectors or overview.bottom_sectors)):
                 data_limit_lines.append("- 该市场暂无行业板块/概念题材涨跌榜。")
             if data_limit_lines:
                 data_limits_block = "## 数据边界\n" + "\n".join(data_limit_lines)

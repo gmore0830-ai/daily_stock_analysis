@@ -497,6 +497,8 @@ def format_percent_display(value: Any, default: str = "N/A", digits: int = 2) ->
     text = format_percent_number(value, default=default, digits=digits)
     if text == default or text.lower() in _MISSING_DISPLAY_TOKENS:
         return default
+    if _safe_float(value) is None:
+        return text  # free text from the model (e.g. "资料缺失"): never append "%"
     return text if text.endswith("%") else f"{text}%"
 
 

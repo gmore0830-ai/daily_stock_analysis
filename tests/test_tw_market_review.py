@@ -54,6 +54,18 @@ Available index data is listed below.
 """
 
 
+@pytest.fixture(autouse=True)
+def _no_live_tw_market_data():
+    """Keep these tests offline: the TWSE/TPEx breadth & sector fetcher returns nothing."""
+    stub = MagicMock()
+    stub.get_twse_market_stats.return_value = {}
+    stub.get_twse_sector_rankings.return_value = ([], [])
+    stub.get_tpex_index.return_value = None
+    stub.get_twse_total_amount.return_value = None
+    with patch("data_provider.tw_market_fetcher.get_tw_market_fetcher", return_value=stub):
+        yield stub
+
+
 @pytest.fixture
 def isolated_db(tmp_path):
     config = Config(database_path=str(tmp_path / "recap.db"), market_review_region="tw")
@@ -72,8 +84,10 @@ def test_tw_prompt_uses_taiwan_context_and_discloses_partial_coverage(language):
     prompt = analyzer._build_review_prompt(MarketOverview(date="2026-11-10", indices=[_index()]), [])
 
     assert analyzer.profile.region == analyzer.strategy.region == "tw"
-    assert not analyzer.profile.has_market_stats
-    assert not analyzer.profile.has_sector_rankings
+    # TW breadth / sector data now come from TWSE (tw_market_fetcher); with no data the
+    # prompt must still disclose the gap instead of inventing numbers.
+    assert analyzer.profile.has_market_stats
+    assert analyzer.profile.has_sector_rankings
     assert "TWOII:" in prompt
     assert "TWII:" not in prompt
     assert "台股" in prompt if language == "zh" else "Taiwan market" in prompt
@@ -82,8 +96,8 @@ def test_tw_prompt_uses_taiwan_context_and_discloses_partial_coverage(language):
     if language == "ko":
         assert "Korean (한국어)" in prompt
     assert analyzer._format_turnover_value(0) == "N/A"
-    assert analyzer._format_turnover_value(2_500_000_000) == "2.50"
-    assert analyzer._get_turnover_unit_label() == ("十亿新台币" if language == "zh" else "TWD bn")
+    assert analyzer._format_turnover_value(2_500_000_000) == "25"
+    assert analyzer._get_turnover_unit_label() == ("亿新台币" if language == "zh" else "TWD 100m")
 
 
 @pytest.mark.parametrize("language", ["zh", "en", "ko"])
@@ -256,3 +270,28 @@ def test_tw_markdown_only_share_image_recognizes_market_heading(heading):
     assert ("台股市场复盘" if heading == "台股大盘复盘" else heading) in html
     assert 'class="poster market' in html
     assert "TWOII: data unavailable" in html
+
+
+def test_tw_overview_uses_twse_breadth_and_sectors(_no_live_tw_market_data):
+    _no_live_tw_market_data.get_twse_market_stats.return_value = {
+        "up_count": 971, "down_count": 83, "flat_count": 32,
+        "limit_up_count": 57, "limit_down_count": 3, "total_amount": 8453.37,
+    }
+    _no_live_tw_market_data.get_twse_sector_rankings.return_value = (
+        [{"name": "電子零組件", "change_pct": 8.31}],
+        [{"name": "玻璃陶瓷", "change_pct": -0.02}],
+    )
+    with patch("src.market_analyzer.DataFetcherManager") as manager, patch(
+        "src.market_analyzer.get_market_now",
+        return_value=datetime(2026, 11, 26, 16, 45, tzinfo=ZoneInfo("Asia/Taipei")),
+    ):
+        manager.return_value.get_main_indices.return_value = [{**_index().to_dict(), "prev_close": 21900}]
+        analyzer = MarketAnalyzer(region="tw", config=Config(report_language="zh"))
+        overview = analyzer.get_market_overview()
+    _no_live_tw_market_data.get_twse_market_stats.assert_called_once_with("20261126")
+    assert (overview.up_count, overview.limit_up_count, overview.total_amount) == (971, 57, 8453.37)
+    prompt = analyzer._build_review_prompt(overview, [])
+    assert "市场概况（上市股票，TWSE）" in prompt
+    assert "类股领涨: 電子零組件(+8.31%)" in prompt
+    assert "两市成交额" not in prompt
+    assert "概念领涨" not in prompt

@@ -248,7 +248,7 @@ def _flag_stop_and_reward_risk(dashboard: Dict[str, Any], lang: str) -> Optional
     intelligence["risk_alerts"] = alerts
 
     strategy = _dict(battle, "position_strategy")
-    risk_control = _text(strategy.get("risk_control"))
+    risk_control = _text(strategy.get("risk_control")).rstrip("。；;. ")
     joined = "；".join(w.lstrip("⚠️ ").strip() for w in warnings) if lang == "zh" else "; ".join(warnings)
     if joined not in risk_control:
         strategy["risk_control"] = f"{risk_control}{'；' if risk_control else ''}⚠️ {joined}" if lang == "zh" else (
@@ -265,7 +265,7 @@ _OWN_WARNING_PREFIXES = ("⚠️ 停损距", "⚠️ 风报比", "⚠️ 目标�
 
 def annotate_news_citation(text: str, lang: str = "zh", registry: Any = None) -> str:
     """Resolve [Nx] ids into source links + event dates; mark unsourced items unverified."""
-    from src.news_registry import CITATION_PATTERN, get_news_registry, normalize_news_date
+    from src.news_registry import CITATION_PATTERN, citation_ids, get_news_registry, normalize_news_date
 
     if not isinstance(text, str) or not text.strip() or text.startswith(_OWN_WARNING_PREFIXES):
         return text
@@ -274,10 +274,10 @@ def annotate_news_citation(text: str, lang: str = "zh", registry: Any = None) ->
     data_backed = any(tag in body for tag in _DATA_TAGS)
     for tag in _DATA_TAGS:
         body = body.replace(tag, "")
-    ids = CITATION_PATTERN.findall(body)
+    ids = citation_ids(body)
     body = CITATION_PATTERN.sub("", body)
     body = re.sub(r"\s+([，。；,.;)）])", r"\1", body).rstrip(" ，,;；")
-    items = [item for item in (registry.get(i) for i in dict.fromkeys(ids)) if item is not None]
+    items = [item for item in (registry.get(i) for i in ids) if item is not None]
 
     # Event date = the cited item's own publication date, not the report date.
     dated = next((item.published_date for item in items if item.published_date), "")

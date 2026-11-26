@@ -160,3 +160,15 @@ class NewsCitationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultiIdCitationTest(unittest.TestCase):
+    def test_comma_separated_ids_resolve(self):
+        registry = get_news_registry()
+        registry.reset()
+        registry.register({"title": "a", "url": "https://x/a"})
+        registry.register({"title": "b", "url": "https://x/b"})
+        self.assertEqual(
+            render_inline_citations("大跌后收复 [N1, N2]。另见 [N2]、[N9]。"),
+            "大跌后收复（[来源1](https://x/a) [来源2](https://x/b)）。另见（[来源](https://x/b)）。",
+        )

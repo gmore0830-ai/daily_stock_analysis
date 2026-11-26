@@ -110,12 +110,17 @@ class TwInstitutionalFetcher:
         cache_ttl_seconds: int = 900,
         min_request_interval: float = 1.8,
         timeout: int = 15,
+        tpex_timeout: int = 60,
     ) -> None:
         # Whole-market single-day cache keyed by (market, ad_date); filtered per stock.
         self._cache: Dict[Any, Dict[str, dict]] = {}
         self._cache_at: Dict[Any, float] = {}
         self._cache_ttl = cache_ttl_seconds
         self._timeout = timeout
+        # TPEx OpenAPI serves the whole 上櫃 market in one ~900-row response and is slow
+        # from overseas cloud runners (15 s read timeouts seen on GitHub Actions); give
+        # it a longer budget. Normally fetched once in the background via prefetch().
+        self._tpex_timeout = tpex_timeout
         # TWSE T86 RWD endpoint has an informal ~3 req / 5 s ban; throttle requests.
         self._min_interval = min_request_interval
         self._last_request_at = 0.0
@@ -260,13 +265,29 @@ class TwInstitutionalFetcher:
                 time.sleep(wait)
             self._last_request_at = time.time()
 
+    def prefetch(self, markets: Any) -> None:
+        """Warm the whole-market tables in a daemon thread so per-stock lookups hit cache."""
+        wanted = [m for m in dict.fromkeys(markets or []) if m in ("twse", "tpex")]
+        if not wanted:
+            return
+
+        def _run() -> None:
+            for market in wanted:
+                try:
+                    table = self._whole_market(market, None)
+                    logger.info("[tw-inst] prefetch market=%s rows=%d", market, len(table or {}))
+                except Exception as exc:  # noqa: BLE001 - fail-open by contract
+                    logger.info("[tw-inst] prefetch failed market=%s: %s", market, exc)
+
+        threading.Thread(target=_run, name="tw-inst-prefetch", daemon=True).start()
+
     def _get_json(self, url: str, params: Optional[dict] = None) -> Any:
         self._throttle()
         resp = requests.get(
             url,
             params=params,
             headers={"User-Agent": _UA, "Accept": "application/json"},
-            timeout=self._timeout,
+            timeout=self._tpex_timeout if url == _TPEX_URL else self._timeout,
         )
         resp.raise_for_status()
         return resp.json()

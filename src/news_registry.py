@@ -15,7 +15,17 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-CITATION_PATTERN = re.compile(r"\[(N\d{1,4})\]")
+# Accepts [N3], [N3, N5], [N3，N5] and [N3、N5]; use citation_ids() to split a match.
+CITATION_PATTERN = re.compile(r"\[(N\d{1,4}(?:\s*[,，、]\s*N\d{1,4})*)\]")
+_ID_PATTERN = re.compile(r"N\d{1,4}")
+
+
+def citation_ids(text: str) -> list:
+    """All citation ids in ``text`` in first-seen order."""
+    ids = []
+    for group in CITATION_PATTERN.findall(text or ""):
+        ids.extend(_ID_PATTERN.findall(group))
+    return list(dict.fromkeys(ids))
 _DATE_PATTERN = re.compile(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})")
 
 
@@ -105,11 +115,13 @@ def render_inline_citations(text: str, language: str = "zh") -> str:
     label = "来源" if language == "zh" else "Source"
 
     def _group(match: "re.Match[str]") -> str:
-        ids = list(dict.fromkeys(CITATION_PATTERN.findall(match.group(0))))
+        ids = citation_ids(match.group(0))
         urls = [item.url for item in (registry.get(i) for i in ids) if item is not None and item.url]
         if not urls:
             return ""
         parts = [f"[{label}{idx if len(urls) > 1 else ''}]({url})" for idx, url in enumerate(urls, 1)]
         return f"（{' '.join(parts)}）" if language == "zh" else f" ({' '.join(parts)})"
 
-    return re.sub(r"(?:\s*\[N\d{1,4}\])+", _group, text)
+    resolved = re.sub(r"(?:\s*" + CITATION_PATTERN.pattern + r")+", _group, text)
+    # Dropping an unknown id can strand a list separator, e.g. "见（…）、。" -> "见（…）。"
+    return re.sub(r"[、，,]\s*(?=[。；;）)]|$)", "", resolved)

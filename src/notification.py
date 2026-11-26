@@ -101,9 +101,9 @@ def _decision_bucket_legend(report_language: Optional[str]) -> str:
     """One-line legend mapping the eight actions to the three header buckets."""
     language = normalize_report_language(report_language)
     if language == "zh":
-        return "分类对照：🟢买入＝买入/加仓 · 🟡观望＝持有/观望 · 🔴卖出＝减仓/卖出"
+        return "分类对照：🟢买入＝买入/加仓 · 🟡观望＝持有/观望 · 🔴卖出＝减仓/卖出/风险警示"
     if language == "en":
-        return "Buckets: 🟢 Buy = buy/add · 🟡 Watch = hold/watch · 🔴 Sell = reduce/sell"
+        return "Buckets: 🟢 Buy = buy/add · 🟡 Watch = hold/watch · 🔴 Sell = reduce/sell/alert"
     return ""
 
 
@@ -1225,16 +1225,24 @@ class NotificationService(
             report_language=report_language or self._get_report_language(result),
         )
 
+    @staticmethod
+    def _display_bucket(result: AnalysisResult, report_language: Optional[str]) -> str:
+        """Fixed three-bucket mapping shared by header counts and per-stock emoji.
+
+        buy/add -> buy; reduce/sell/alert(风险警示) -> sell; everything else -> hold.
+        """
+        action = display_action_fields_for_result(result, report_language=report_language)["action"]
+        if action == "alert":
+            return "sell"
+        return display_decision_type_for_result(result, report_language=report_language)
+
     def _count_display_decisions(
         self,
         results: List[AnalysisResult],
         report_language: Optional[str] = None,
     ) -> Tuple[int, int, int]:
         language = report_language or self._get_report_language(results)
-        buckets = [
-            display_decision_type_for_result(result, report_language=language)
-            for result in results
-        ]
+        buckets = [self._display_bucket(result, language) for result in results]
         buy_count = sum(1 for bucket in buckets if bucket == "buy")
         sell_count = sum(1 for bucket in buckets if bucket == "sell")
         hold_count = len(buckets) - buy_count - sell_count
@@ -1264,8 +1272,7 @@ class NotificationService(
         )
         # emoji 一律跟表头统计同一套三分类（买入/加仓→🟢、持有/观望→🟡、减仓/卖出→🔴），
         # 避免表头算「🟡观望」、内文却显示 ⚪/🟠 的不一致
-        bucket = display_decision_type_for_result(result, report_language=report_language)
-        emoji = _DECISION_BUCKET_EMOJI.get(bucket, "🟡")
+        emoji = _DECISION_BUCKET_EMOJI.get(self._display_bucket(result, report_language), "🟡")
         return (
             self._get_display_operation_advice(result, report_language),
             emoji,
