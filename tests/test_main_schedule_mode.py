@@ -1802,6 +1802,37 @@ class MainScheduleModeTestCase(unittest.TestCase):
         pipeline.run.assert_called_once()
         run_market_review.assert_not_called()
 
+    def test_run_full_analysis_defers_market_review_until_after_stocks_when_configured(self) -> None:
+        args = self._make_args(no_market_review=False)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            daily_market_context_enabled=True,
+            daily_market_context_generate_before_stocks=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline_kwargs = {}
+        events = []
+        pipeline.run.side_effect = lambda **_: events.append("stocks") or []
+
+        def build_pipeline(*args, **kwargs):
+            pipeline_kwargs.update(kwargs)
+            return pipeline
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"),              patch("main._compute_trading_day_filter", return_value=([], "tw", False)),              patch("src.core.pipeline.StockAnalysisPipeline", side_effect=build_pipeline),              patch("main._prime_daily_market_context", return_value=("", "")),              patch("main._run_market_review_with_shared_lock",
+                   side_effect=lambda *a, **k: events.append("review")) as review:
+            main.run_full_analysis(config, args, ["2313.TW"])
+
+        # Stocks may still reuse an existing same-day review, but never generate one first.
+        self.assertTrue(pipeline_kwargs["daily_market_context_enabled"])
+        self.assertFalse(pipeline_kwargs["daily_market_context_allow_generate"])
+        review.assert_called_once()
+        self.assertEqual(events, ["stocks", "review"])
+
     def test_run_full_analysis_disables_generation_when_no_market_review_flag_set(self) -> None:
         args = self._make_args(no_market_review=True)
         config = self._make_config(

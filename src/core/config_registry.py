@@ -3617,6 +3617,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "DAILY_MARKET_CONTEXT_GENERATE_BEFORE_STOCKS": {
+        "title": "Generate Market Context Before Stocks",
+        "description": "Let the stock phase generate today's market review first when none exists; false only reuses an existing same-day review and runs the market review after stock analysis.",
+        "category": "system",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 48,
+        "help_key": "settings.system.market_review",
+        "examples": [
+            "DAILY_MARKET_CONTEXT_GENERATE_BEFORE_STOCKS=true",
+            "DAILY_MARKET_CONTEXT_GENERATE_BEFORE_STOCKS=false",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：环境变量完整列表",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
     "DAILY_MARKET_CONTEXT_ENABLED": {
         "title": "Daily Market Context Enabled",
         "description": "Inject daily market context into stock-analysis prompts and apply conservative decision guardrails.",

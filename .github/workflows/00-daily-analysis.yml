@@ -481,6 +481,8 @@ jobs:
           REPORT_SHOW_LLM_MODEL: ${{ vars.REPORT_SHOW_LLM_MODEL || secrets.REPORT_SHOW_LLM_MODEL || 'true' }}
           SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
           MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
+          # 大盤復盤改在個股之後產生（共用個股已檢索的新聞）；個股只複用當日已有的復盤當背景
+          DAILY_MARKET_CONTEXT_GENERATE_BEFORE_STOCKS: ${{ vars.DAILY_MARKET_CONTEXT_GENERATE_BEFORE_STOCKS || 'false' }}
           ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
           # 公共通達信伺服器在 GitHub Actions 上連不到，只分析台/美股時關閉以省下每次約 30 秒的連線逾時
           PYTDX_ENABLED: ${{ vars.PYTDX_ENABLED || 'false' }}

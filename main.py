@@ -1087,7 +1087,11 @@ def run_full_analysis(
             query_source="cli",
             save_context_snapshot=save_context_snapshot,
             daily_market_context_enabled=should_use_daily_market_context,
-            daily_market_context_allow_generate=should_use_daily_market_context,
+            # false 时个股只复用当日已有复盘，大盘复盘改在个股分析之后生成
+            daily_market_context_allow_generate=(
+                should_use_daily_market_context
+                and getattr(config, 'daily_market_context_generate_before_stocks', True) is not False
+            ),
         )
         if should_use_daily_market_context:
             # Prompt-side context can reuse historical summaries, while full-merge
