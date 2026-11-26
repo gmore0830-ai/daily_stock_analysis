@@ -93,6 +93,19 @@ from src.notification_sender import (
 
 logger = logging.getLogger(__name__)
 
+# 表头统计与个股 emoji 共用的固定三分类对照
+_DECISION_BUCKET_EMOJI = {"buy": "🟢", "hold": "🟡", "sell": "🔴"}
+
+
+def _decision_bucket_legend(report_language: Optional[str]) -> str:
+    """One-line legend mapping the eight actions to the three header buckets."""
+    language = normalize_report_language(report_language)
+    if language == "zh":
+        return "分类对照：🟢买入＝买入/加仓 · 🟡观望＝持有/观望 · 🔴卖出＝减仓/卖出"
+    if language == "en":
+        return "Buckets: 🟢 Buy = buy/add · 🟡 Watch = hold/watch · 🔴 Sell = reduce/sell"
+    return ""
+
 
 def _safe_float(value: Any) -> Optional[float]:
     """Best-effort float conversion; handles `"3.2%"` and `"1,234"` shapes."""
@@ -1244,11 +1257,15 @@ class NotificationService(
             "avoid": "hold",
             "alert": "sell",
         }.get(display_fields["action"])
-        _, emoji, signal_tag = get_signal_level(
+        _, _, signal_tag = get_signal_level(
             signal_advice or self._get_display_operation_advice(result, report_language),
             result.sentiment_score,
             report_language,
         )
+        # emoji 一律跟表头统计同一套三分类（买入/加仓→🟢、持有/观望→🟡、减仓/卖出→🔴），
+        # 避免表头算「🟡观望」、内文却显示 ⚪/🟠 的不一致
+        bucket = display_decision_type_for_result(result, report_language=report_language)
+        emoji = _DECISION_BUCKET_EMOJI.get(bucket, "🟡")
         return (
             self._get_display_operation_advice(result, report_language),
             emoji,
@@ -1318,6 +1335,9 @@ class NotificationService(
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit']} | "
             f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count}",
         ]
+        legend = _decision_bucket_legend(report_language)
+        if legend:
+            report_lines.append(f"> {legend}")
         self._append_market_status_line(report_lines, results, report_language)
 
         # === 新增：分析结果摘要 (Issue #112) ===

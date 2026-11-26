@@ -39,6 +39,7 @@ from src.config import (
     normalize_news_strategy_profile,
     resolve_news_window_days,
 )
+from src.news_registry import get_news_registry
 from src.data.stock_mapping import (
     canonicalize_foreign_stock_code,
     foreign_stock_english_aliases,
@@ -4674,10 +4675,14 @@ class SearchService:
                 # 增加显示条数
                 for i, r in enumerate(resp.results[:4], 1):
                     date_str = f" [{r.published_date}]" if r.published_date else ""
-                    lines.append(f"  {i}. {r.title}{date_str}")
+                    news_id = get_news_registry().register(r)
+                    cite = f"[{news_id}] " if news_id else ""
+                    lines.append(f"  {i}. {cite}{r.title}{date_str}")
                     # 如果摘要太短，可能信息量不足
                     snippet = r.snippet[:150] if len(r.snippet) > 20 else r.snippet
                     lines.append(f"     {snippet}...")
+                    if r.url:
+                        lines.append(f"     来源链接: {r.url}")
                     if r.relevance_category or r.relevance_reasons:
                         relevance_parts = []
                         if r.relevance_category:

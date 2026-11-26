@@ -67,6 +67,7 @@ from src.agent.news_evidence import (
 from src.services.empty_news import news_evidence_present
 from src.formatters import strip_hidden_markdown_metadata
 from src.phase_decision_guardrail import apply_phase_decision_guardrails
+from src.report_quality_guardrail import apply_report_quality_guardrails
 from src.services.daily_market_context import (
     DailyMarketContext,
     DailyMarketContextService,
@@ -926,6 +927,17 @@ class StockAnalysisPipeline:
                         code,
                         market_context_adjustments,
                     )
+                quality_adjustments = apply_report_quality_guardrails(
+                    result,
+                    context=enhanced_context,
+                    market_phase_summary=market_phase_summary,
+                    report_language=getattr(result, "report_language", None)
+                    or getattr(self.config, "report_language", "zh"),
+                )
+                if quality_adjustments:
+                    logger.info(
+                        "[report_quality_guardrail] Applied adjustments for %s: %s", code, quality_adjustments
+                    )
                 if isinstance(fundamental_context, dict):
                     result.fundamental_context = fundamental_context
                 if isinstance(market_structure_context, dict):
@@ -1067,6 +1079,14 @@ class StockAnalysisPipeline:
                 'stale_seconds': getattr(realtime_quote, 'stale_seconds', None),
                 'fallback_from': getattr(realtime_quote, 'fallback_from', None),
             }
+            enhanced['realtime']['pre_close'] = getattr(realtime_quote, 'pre_close', None)
+            # 数据源未提供量比（如 yfinance 台股）时，用日线「今日量 ÷ 5日均量」补上
+            ratio_5d = getattr(trend_result, 'volume_ratio_5d', None) if trend_result else None
+            if not volume_ratio and isinstance(ratio_5d, (int, float)) and ratio_5d > 0:
+                enhanced['realtime']['volume_ratio'] = round(float(ratio_5d), 2)
+                enhanced['realtime']['volume_ratio_desc'] = (
+                    f"{self._describe_volume_ratio(float(ratio_5d))}（今日量÷5日均量推算）"
+                )
             # 移除 None 值以减少上下文大小
             enhanced['realtime'] = {k: v for k, v in enhanced['realtime'].items() if v is not None}
         
@@ -1766,6 +1786,28 @@ class StockAnalysisPipeline:
                 )
                 if adjustments:
                     logger.info("[phase_decision_guardrail] Applied agent adjustments for %s: %s", code, adjustments)
+                agent_quote = initial_context.get("realtime_quote")
+                agent_quote = agent_quote if isinstance(agent_quote, dict) else {}
+                quality_adjustments = apply_report_quality_guardrails(
+                    result,
+                    context={
+                        "code": code,
+                        "today": {
+                            "open": agent_quote.get("open_price"),
+                            "high": agent_quote.get("high"),
+                            "low": agent_quote.get("low"),
+                            "close": agent_quote.get("price"),
+                        },
+                        "realtime": {"pre_close": agent_quote.get("pre_close")},
+                    },
+                    market_phase_summary=market_phase_summary,
+                    report_language=getattr(result, "report_language", None)
+                    or getattr(self.config, "report_language", "zh"),
+                )
+                if quality_adjustments:
+                    logger.info(
+                        "[report_quality_guardrail] Applied agent adjustments for %s: %s", code, quality_adjustments
+                    )
                 self._refresh_decision_action_for_final_result(
                     result,
                     report_type=report_type.value,

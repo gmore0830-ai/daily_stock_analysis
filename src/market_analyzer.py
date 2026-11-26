@@ -20,6 +20,7 @@ from typing import Optional, Dict, Any, List
 
 import pandas as pd
 
+from src.news_registry import get_news_registry, render_inline_citations
 from src.agent.provider_trace import resolved_model_provider_identity
 from src.config import get_config
 from src.report_language import normalize_report_language
@@ -933,7 +934,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 len(review),
             )
             # Inject structured data tables into LLM prose sections
-            return self._with_tw_index_coverage(self._inject_data_into_review(review, overview, news), overview)
+            return self._with_tw_index_coverage(render_inline_citations(self._inject_data_into_review(review, overview, news), self._get_output_language()), overview)
 
         logger.warning(
             "[大盘] %s action=generate_review status=fallback_template reason=empty_llm_response",
@@ -1736,6 +1737,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         
         # 新闻信息 - 支持 SearchResult 对象或字典
         news_text = ""
+        shown_ids: set = set()
         for i, n in enumerate(news[:6], 1):
             # 兼容 SearchResult 对象和字典
             title = self._compact_news_text(self._get_news_field(n, "title"), limit=90)
@@ -1746,8 +1748,22 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             meta_parts = [part for part in (source, published_date) if part]
             meta = f" ({' / '.join(meta_parts)})" if meta_parts else ""
             url_line = f"\n   URL: {url}" if url else ""
-            news_text += f"{i}. {title}{meta}\n   {snippet or '-'}{url_line}\n"
-        
+            news_id = get_news_registry().register(n)
+            cite = f"[{news_id}] " if news_id else ""
+            news_text += f"{i}. {cite}{title}{meta}\n   {snippet or '-'}{url_line}\n"
+            if news_id:
+                shown_ids.add(news_id)
+
+        # 同一次执行中个股分析已检索到的新闻（共用同一份检索结果，避免两份报告对“有无新闻”说法矛盾）
+        shared_items = [item for item in get_news_registry().items() if item.news_id not in shown_ids][:10]
+        if shared_items:
+            news_text += "\n本次个股分析已检索到的新闻（共用）：\n" if review_language != "en" else (
+                "\nNews already retrieved by this run's stock analyses (shared):\n"
+            )
+            for item in shared_items:
+                meta = f" ({item.published_date})" if item.published_date else ""
+                news_text += f"- [{item.news_id}] {item.title}{meta}\n"
+
         # 按 region 组装市场概况与板块区块（美股/港股/日韩无涨跌家数、板块数据）
         stats_block = ""
         sector_block = ""
@@ -1815,6 +1831,11 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 if data_limits_block
                 else ""
             )
+            if news_text:
+                data_boundary_requirement += (
+                    "- Cite news with its id at the end of the sentence (e.g. [N3]) and use the news item's own date, "
+                    "never the report date; when news is listed above, never claim there was no notable news.\n"
+                )
             market_summary_hint = (
                 "2-3 sentences summarizing overall market tone, index moves, and liquidity."
                 if self.profile.has_market_stats
@@ -1828,6 +1849,11 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 if data_limits_block
                 else ""
             )
+            if news_text:
+                data_boundary_requirement += (
+                    "- 引用新闻时在句尾标注编号（如 [N3]），日期写新闻本身的发布日，不得套用报告日期；"
+                    "上方已列出新闻时，不得写“无重大新闻”“未检索到新闻”。\n"
+                )
             market_summary_hint = (
                 "2-3句话概括指数、涨跌家数、成交额和情绪温度，明确“强势/偏暖/震荡/偏弱”判断"
                 if self.profile.has_market_stats

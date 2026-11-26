@@ -98,6 +98,7 @@ from src.report_language import (
     normalize_report_language,
 )
 from src.schemas.decision_action import build_action_fields
+from src.tw_price_limits import compute_tw_limit_status_from_context, format_limit_prompt_section
 from src.schemas.decision_scale import (
     CANONICAL_DECISION_SCALE_PROMPT_EN,
     CANONICAL_DECISION_SCALE_PROMPT_ZH,
@@ -5053,7 +5054,12 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 prompt += """
 - ⚠️ 量能异常提示：成交量较昨日放大超过10倍，可能受异常数据或一次性冲量影响，必须降权解读，不能机械视为强确认信号
 """
-        
+
+        # 台股涨跌停状态（依升降单位计算，避免把一字涨停误读为缩量上涨）
+        limit_info = compute_tw_limit_status_from_context(context)
+        if limit_info:
+            prompt += format_limit_prompt_section(limit_info, english=english)
+
         # 添加新闻搜索结果（重点区域）
         news_window_days: Optional[int] = None
         context_window = context.get("news_window_days")
@@ -5093,6 +5099,12 @@ Below are the news search results for **{stock_name}({code})** from the last {ne
    - Every item written to `risk_alerts` / `positive_catalysts` / `latest_news` must include a specific date (YYYY-MM-DD)
    - Ignore all news older than the last {news_window_days} days
    - Ignore all news whose publication date is unknown or cannot be determined
+   - The date must be the news item's own publication/event date shown next to it, never the analysis/report date
+5. 🔗 **Citation rules (mandatory)**:
+   - Every news item carries a citation id such as [N3]; end each `risk_alerts` / `positive_catalysts` / `latest_news` entry with the id(s) it is based on, e.g. `... [N3]`
+   - Entries format: `[YYYY-MM-DD] description [N3]`
+   - Content not backed by any listed item must not be stated as fact (it will be marked unverified)
+   - Entries derived from the structured market / technical / institutional / financial data above (not news) end with [DATA] instead
 
 ```
 {news_context}
@@ -5108,6 +5120,12 @@ Below are the news search results for **{stock_name}({code})** from the last {ne
    - 输出到 `risk_alerts` / `positive_catalysts` / `latest_news` 的每一条都必须带具体日期（YYYY-MM-DD）
    - 超出近{news_window_days}日窗口的新闻一律忽略
    - 时间未知、无法确定发布日期的新闻一律忽略
+   - 日期必须是该则新闻本身标示的发布/事件发生日，不得套用分析日期或报告日期
+5. 🔗 **引用规则（强制）**：
+   - 每则新闻都有引用编号（如 [N3]）；`risk_alerts` / `positive_catalysts` / `latest_news` 的每一条都要在句尾标注所依据的编号，例如 `…… [N3]`
+   - 格式：`[YYYY-MM-DD] 事件描述 [N3]`
+   - 没有对应编号支持的内容不得写成事实（系统会标注为未证实）
+   - 依据上方行情、技术面、三大法人、财报等结构化数据得出的条目（非新闻），改在句尾标注 [数据]
 
 ```
 {news_context}
