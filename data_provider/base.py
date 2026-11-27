@@ -3398,6 +3398,31 @@ class DataFetcherManager:
         except Exception as exc:  # noqa: BLE001 - never block the run on a warm-up
             logger.info("[tw-inst] prefetch init failed: %s", exc)
 
+    @staticmethod
+    def _prefer_official_taiex(tw: Any, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Replace a missing or lagging yfinance ^TWII bar with the official TWSE one.
+
+        yfinance sometimes still serves the previous session's TAIEX bar after the
+        close (seen on 2026-11-27: 11/26 bar, +0.00%), while TWSE has the real close.
+        """
+        try:
+            official = tw.get_twse_taiex()
+        except Exception as exc:  # noqa: BLE001 - keep the yfinance bar
+            logger.info("[tw-market] TWSE TAIEX lookup failed: %s", exc)
+            return items
+        if not isinstance(official, dict) or not official.get("date"):
+            return items
+        current = next((i for i in items if str(i.get("code", "")).upper() == "TWII"), None)
+        current_date = str((current or {}).get("date") or "").replace("/", "-")[:10]
+        if current is not None and current_date and current_date >= official["date"]:
+            return items
+        logger.info(
+            "[tw-market] TWII replaced by TWSE official bar: yfinance_date=%s official_date=%s close=%s",
+            current_date or "missing", official["date"], official["current"],
+        )
+        others = [i for i in items if i is not current]
+        return [official] + others
+
     def _supplement_tw_indices(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fill Taiwan index gaps from official sources (fail-open).
 
@@ -3415,9 +3440,12 @@ class DataFetcherManager:
                 if tpex:
                     items.append(tpex)
                     logger.info("[tw-market] TWOII filled from TPEx OpenAPI: %s", tpex.get("current"))
+            items = self._prefer_official_taiex(tw, items)
             for item in items:
                 if str(item.get("code", "")).upper() == "TWII" and not item.get("amount"):
-                    amount = tw.get_twse_total_amount()
+                    # Turnover of the bar's own session (today may be a weekend/holiday).
+                    bar_date = str(item.get("date") or "").replace("-", "").replace("/", "")[:8]
+                    amount = tw.get_twse_total_amount(bar_date or None)
                     if amount:
                         item["amount"] = amount
                         logger.info("[tw-market] TWII turnover filled from TWSE: %.0f", amount)

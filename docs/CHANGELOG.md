@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 台股加权指数：yfinance `^TWII` 仍停在前一交易日（如 11/27 盘后仍为 11/26、+0.00%）时，改用 TWSE 官方 MI_5MINS_HIST 收盘；成交额按该 K 线日期抓取，周末/假日不再缺值；指数表格对资料日期落后的指数标注实际日期。
+- [修复] 每日 Actions 繁体转换修正「迴顧」为「回顧」。
 - [修复] 大盘复盘按指数实际资料日期判断交易日：美股感恩节等休市日只输出「休市，以下为 X 收盘回顾」，标题与正文不再使用「今日」；资料早于预期交易日时标记「资料未更新」且不送 LLM 分析；日志逐一输出各指数（含 VIX）资料日期并提示不一致。
 - [改进] 大盘复盘 Prompt 写明「资料日期」并要求首句写出资料日期；「明日交易计划」改为具体下一交易日（如「交易计划｜11/27（五）美股半日盘」）。
 - [改进] 新增 `NEWS_EXCLUDED_SOURCES`（默认 `cmoney.tw/forum,youtube.com,youtu.be`），新闻上下文排除论坛与影音来源。

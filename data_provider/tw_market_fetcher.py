@@ -20,7 +20,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _TWSE_MI_INDEX = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
 _TPEX_INDEX = "https://www.tpex.org.tw/openapi/v1/tpex_index"
+_TWSE_TAIEX_HIST = "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST"
 _TWSE_BFI82U = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
 _TPEX_INSTI_SUMMARY = "https://www.tpex.org.tw/www/zh-tw/insti/summary"
 _HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -216,6 +217,61 @@ class TwMarketFetcher:
         except Exception as exc:  # noqa: BLE001
             logger.info("[tw-market] TWSE sector fetch failed: %s", exc)
             return [], []
+
+    # ------------------------------------------------------- TWSE TAIEX
+    def _taiex_month_rows(self, ad_date: str) -> List[Tuple[str, float, float, float, float]]:
+        """[(YYYY-MM-DD, open, high, low, close)] for the month of ``ad_date``."""
+        payload = self._get_json(_TWSE_TAIEX_HIST, {"date": ad_date, "response": "json"})
+        if not isinstance(payload, dict) or payload.get("stat") != "OK":
+            return []
+        rows = []
+        for row in payload.get("data") or []:
+            if not row or len(row) < 5:
+                continue
+            parts = str(row[0]).strip().split("/")
+            if len(parts) != 3 or not all(p.isdigit() for p in parts):
+                continue
+            day = f"{int(parts[0]) + 1911:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+            values = [_num(v) for v in row[1:5]]
+            if any(v is None for v in values):
+                continue
+            rows.append((day, *values))
+        return sorted(rows)
+
+    def get_twse_taiex(self, date: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Latest official 加權指數 bar (<= ``date``) in the get_main_indices item shape."""
+        try:
+            ad_date = self._norm_date(date)
+            iso = f"{ad_date[:4]}-{ad_date[4:6]}-{ad_date[6:]}"
+            rows = [r for r in self._taiex_month_rows(ad_date) if r[0] <= iso]
+            if len(rows) < 2:
+                # first session of the month: the previous close is in last month's table
+                first = datetime(int(ad_date[:4]), int(ad_date[4:6]), 1)
+                prev_month = (first.replace(day=1) - timedelta(days=1)).strftime("%Y%m%d")
+                rows = self._taiex_month_rows(prev_month) + rows
+            if len(rows) < 2:
+                return None
+            (day, open_, high, low, close), prev_close = rows[-1], rows[-2][4]
+            change = close - prev_close
+            return {
+                "code": "TWII",
+                "name": "台湾加权指数",
+                "current": close,
+                "change": round(change, 2),
+                "change_pct": round(change / prev_close * 100, 2) if prev_close else 0.0,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "prev_close": prev_close,
+                "volume": 0.0,
+                "amount": 0.0,
+                "amplitude": round((high - low) / prev_close * 100, 2) if prev_close else 0.0,
+                "date": day,
+                "source": "TWSE-MI_5MINS_HIST",
+            }
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.info("[tw-market] TWSE TAIEX fetch failed: %s", exc)
+            return None
 
     # ------------------------------------------------ 三大法人 market totals
     def get_institutional_summary(self, date: Optional[str] = None) -> Dict[str, Any]:

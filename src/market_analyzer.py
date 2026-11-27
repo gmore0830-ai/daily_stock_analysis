@@ -1758,8 +1758,16 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             arrow = self._get_index_change_arrow(idx.change_pct)
             amount_raw = idx.amount or 0.0
             amount_str = self._format_turnover_value(amount_raw)
+            name = idx.name
+            if idx.data_date and data_date and idx.data_date != data_date:
+                # Never let a lagging index pass as the latest session.
+                name = (
+                    f"{idx.name} (data {idx.data_date})"
+                    if self._get_review_language() == "en"
+                    else f"{idx.name}（资料日期 {idx.data_date}）"
+                )
             lines.append(
-                f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | "
+                f"| {name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | "
                 f"{self._format_optional_number(idx.open)} | {self._format_optional_number(idx.high)} | "
                 f"{self._format_optional_number(idx.low)} | {self._format_optional_pct(idx.amplitude)} | {amount_str} |"
             )

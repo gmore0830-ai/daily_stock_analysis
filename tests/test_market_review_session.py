@@ -230,3 +230,67 @@ def test_intraday_prompt_forbids_closing_recap():
     prompt = _analyzer()._build_review_prompt(overview, [])
     assert "盘中数据" in prompt
     assert "休市" not in prompt
+
+
+# --------------------------------------------------------------- TAIEX fallback
+
+
+def _taiex_payload(rows):
+    return {"stat": "OK", "data": rows}
+
+
+def test_official_taiex_bar_from_twse_history():
+    from data_provider.tw_market_fetcher import TwMarketFetcher
+
+    fetcher = TwMarketFetcher()
+    payload = _taiex_payload([
+        ["115/11/26", "38,435.99", "39,459.95", "38,435.99", "39,151.81"],
+        ["115/11/27", "39,168.57", "39,495.41", "38,890.53", "39,308.08"],
+    ])
+    with patch.object(fetcher, "_get_json", return_value=payload):
+        bar = fetcher.get_twse_taiex("20261127")
+    assert bar["date"] == "2026-11-27"
+    assert bar["current"] == 39308.08 and bar["prev_close"] == 39151.81
+    assert bar["change_pct"] == 0.4
+
+
+def test_official_taiex_uses_previous_month_for_first_session():
+    from data_provider.tw_market_fetcher import TwMarketFetcher
+
+    fetcher = TwMarketFetcher()
+    october = _taiex_payload([["115/10/30", "1", "1", "1", "45,211.83"]])
+    november = _taiex_payload([["115/11/02", "45,034.53", "45,156.17", "44,399.10", "44,920.14"]])
+    with patch.object(fetcher, "_get_json", side_effect=lambda url, params: november if params["date"] == "20261102" else october):
+        bar = fetcher.get_twse_taiex("20261102")
+    assert bar["prev_close"] == 45211.83
+    assert bar["change_pct"] == -0.65
+
+
+@pytest.mark.parametrize(
+    "yf_date,expect_official",
+    [("2026-11-26", True), ("2026-11-27", False), (None, True)],
+)
+def test_lagging_yfinance_taiex_is_replaced(yf_date, expect_official):
+    from data_provider.base import DataFetcherManager
+
+    official = {"code": "TWII", "current": 39308.08, "date": "2026-11-27"}
+    tw = MagicMock(get_twse_taiex=MagicMock(return_value=official))
+    items = [{"code": "TWOII", "current": 285.77, "date": "1151127"}]
+    if yf_date:
+        items.insert(0, {"code": "TWII", "current": 39151.81, "date": yf_date})
+    result = DataFetcherManager._prefer_official_taiex(tw, items)
+    twii = next(i for i in result if i["code"] == "TWII")
+    assert (twii is official) == expect_official
+    assert [i["code"] for i in result].count("TWII") == 1
+
+
+def test_index_table_labels_lagging_index():
+    overview = MarketOverview(
+        date="2026-11-28",
+        indices=[_us_index("TWII", "2026-11-26"), _us_index("TWOII", "2026-11-27")],
+        data_date="2026-11-27",
+        session={"data_date": "2026-11-27", "status": "closed"},
+    )
+    block = _analyzer(region="tw")._build_indices_block(overview)
+    assert "TWII（资料日期 2026-11-26）" in block
+    assert "TWOII（资料日期" not in block
