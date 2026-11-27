@@ -685,3 +685,152 @@ def compute_effective_region(
     if len(open_selected) == 1:
         return open_selected[0]
     return ",".join(open_selected)
+
+
+# ---------------------------------------------------------------------------
+# Market review session context: which session the data covers, whether the
+# market was closed since, and what the next session looks like.
+# ---------------------------------------------------------------------------
+
+_HOLIDAY_NAME_ZH = {
+    "new year": "元旦",
+    "martin luther king": "马丁路德金纪念日",
+    "president": "总统日",
+    "good friday": "耶稣受难日",
+    "memorial": "阵亡将士纪念日",
+    "juneteenth": "六月节",
+    "july 4th": "独立日",
+    "independence day": "独立日",
+    "labor day": "劳动节",
+    "labour day": "劳动节",
+    "thanksgiving": "感恩节",
+    "christmas": "圣诞节",
+    "peace memorial": "和平纪念日",
+    "women and children": "儿童节",
+    "teachers": "教师节",
+    "national day of the republic of china": "国庆日",
+    "taiwan restoration": "光复节",
+    "constitution": "行宪纪念日",
+}
+
+_WEEKDAY_ZH = "一二三四五六日"
+
+
+def _holiday_name_zh(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    for key, zh in _HOLIDAY_NAME_ZH.items():
+        if key in text:
+            return zh
+    return ""
+
+
+def _parse_iso_date(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip().replace("/", "-")
+    if not text:
+        return None
+    digits = text.replace("-", "")
+    try:
+        if len(digits) == 7 and digits.isdigit():  # 民国 YYYMMDD
+            return date(int(digits[:3]) + 1911, int(digits[3:5]), int(digits[5:7]))
+        if len(digits) == 8 and digits.isdigit():
+            return date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
+    except ValueError:
+        return None
+    return None
+
+
+def normalize_bar_date(value: Any) -> str:
+    """Normalize a quote/bar date (YYYY-MM-DD, YYYYMMDD or 民国 YYYMMDD) to YYYY-MM-DD."""
+    parsed = _parse_iso_date(value)
+    return parsed.isoformat() if parsed else ""
+
+
+def format_session_label(value: Any) -> str:
+    """``2026-11-27`` -> ``11/27（五）``; '' when the date is unknown."""
+    parsed = _parse_iso_date(value)
+    if not parsed:
+        return ""
+    return f"{parsed.month}/{parsed.day}（{_WEEKDAY_ZH[parsed.weekday()]}）"
+
+
+def build_review_session_context(
+    market: str,
+    data_date: Any,
+    current_time: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Describe the session a market review's data belongs to.
+
+    status:
+    - ``normal``: data is the expected latest completed session
+    - ``closed``: data is the expected session, but the market was closed on
+      later calendar day(s) up to today (holiday / weekend)
+    - ``stale``: data is older than the expected session (source not updated)
+    - ``intraday``: data belongs to a session that has not closed yet (partial bar)
+    - ``unknown``: no data date or no trading calendar -> keep legacy behavior
+    """
+    data_day = _parse_iso_date(data_date)
+    context: Dict[str, Any] = {
+        "market": market,
+        "data_date": data_day.isoformat() if data_day else "",
+        "expected_date": "",
+        "status": "unknown",
+        "closed_days": [],
+        "next_session": "",
+        "next_session_early_close": False,
+    }
+    if not _XCALS_AVAILABLE or market not in MARKET_EXCHANGE:
+        return context
+
+    try:
+        market_now = get_market_now(market, current_time=current_time)
+        local_today = market_now.date()
+        expected = get_effective_trading_date(market, current_time=market_now)
+        context["expected_date"] = expected.isoformat()
+
+        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        next_session = get_next_trading_date(market, expected)
+        if next_session:
+            context["next_session"] = next_session.isoformat()
+            early = {d.date() for d in cal.early_closes if d.year in (next_session.year,)}
+            context["next_session_early_close"] = next_session in early
+
+        if data_day is None:
+            return context
+        if data_day < expected:
+            context["status"] = "stale"
+            return context
+        if data_day > expected:
+            context["status"] = "intraday"
+            return context
+
+        holiday_names: Dict[date, str] = {}
+        if next_session:
+            window_end = min(next_session - timedelta(days=1), local_today)
+            if window_end > expected:
+                try:
+                    named = cal.regular_holidays.holidays(
+                        expected + timedelta(days=1), window_end, return_name=True
+                    )
+                    holiday_names = {pd.Timestamp(k).date(): str(v) for k, v in named.items()}
+                except Exception:  # noqa: BLE001 - names are cosmetic
+                    holiday_names = {}
+                day = expected + timedelta(days=1)
+                while day <= window_end:
+                    if not cal.is_session(pd.Timestamp(day)):
+                        weekend = day.weekday() >= 5
+                        context["closed_days"].append({
+                            "date": day.isoformat(),
+                            "weekend": weekend,
+                            "name": "" if weekend else _holiday_name_zh(holiday_names.get(day)),
+                        })
+                    day += timedelta(days=1)
+        context["status"] = "closed" if context["closed_days"] else "normal"
+        return context
+    except Exception as exc:  # noqa: BLE001 - never break the review on calendar errors
+        logger.warning("trading_calendar.build_review_session_context fail-open: %s", exc)
+        context["status"] = "unknown"
+        return context

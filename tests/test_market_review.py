@@ -299,7 +299,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
 
         self.assertIn("# A-share Market Recap\n\nCN body", result)
         self.assertIn("# HK Market Recap\n\nHK body", result)
-        self.assertIn("> Next market recap follows", result)
+        self.assertNotIn("Next market recap follows", result)
         self.assertIn("# US Market Recap\n\nUS body", result)
         self.assertIn("# Japan Market Recap\n\nJP body", result)
         self.assertIn("# Korea Market Recap\n\nKR body", result)
@@ -307,7 +307,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         saved_content = notifier.save_report_to_file.call_args.args[0]
         self.assertTrue(saved_content.startswith("# 🎯 Market Review\n\n"))
         self.assertIn("# A-share Market Recap\n\nCN body", saved_content)
-        self.assertIn("> Next market recap follows", saved_content)
+        self.assertNotIn("Next market recap follows", saved_content)
         self.assertIn("# HK Market Recap\n\nHK body", saved_content)
         self.assertIn("# US Market Recap\n\nUS body", saved_content)
         self.assertIn("# Japan Market Recap\n\nJP body", saved_content)

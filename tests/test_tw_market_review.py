@@ -62,6 +62,7 @@ def _no_live_tw_market_data():
     stub.get_twse_sector_rankings.return_value = ([], [])
     stub.get_tpex_index.return_value = None
     stub.get_twse_total_amount.return_value = None
+    stub.get_institutional_summary.return_value = {}
     with patch("data_provider.tw_market_fetcher.get_tw_market_fetcher", return_value=stub):
         yield stub
 

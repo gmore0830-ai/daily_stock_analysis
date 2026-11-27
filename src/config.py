@@ -338,6 +338,25 @@ def normalize_news_strategy_profile(value: Optional[str]) -> str:
     return candidate if candidate in NEWS_STRATEGY_WINDOWS else "short"
 
 
+DEFAULT_NEWS_EXCLUDED_SOURCES = ("cmoney.tw/forum", "youtube.com", "youtu.be")
+
+
+def parse_news_excluded_sources(raw: Optional[str]) -> List[str]:
+    """Parse NEWS_EXCLUDED_SOURCES; unset -> defaults, empty string -> no exclusion."""
+    if raw is None:
+        return list(DEFAULT_NEWS_EXCLUDED_SOURCES)
+    items = []
+    for part in raw.split(","):
+        text = part.strip().lower()
+        for prefix in ("https://", "http://"):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+        text = text.removeprefix("www.").rstrip("/")
+        if text:
+            items.append(text)
+    return items
+
+
 def resolve_news_window_days(news_max_age_days: int, news_strategy_profile: Optional[str]) -> int:
     """Resolve effective news window days from profile and global max-age."""
     profile = normalize_news_strategy_profile(news_strategy_profile)
@@ -1107,6 +1126,10 @@ class Config:
 
     # === 新闻与分析筛选配置 ===
     news_max_age_days: int = 3   # 新闻最大时效（天）
+    # 排除的新闻来源（host 或 host/path 前缀，逗号分隔）：论坛、影音平台不作为新闻依据
+    news_excluded_sources: List[str] = field(
+        default_factory=lambda: list(DEFAULT_NEWS_EXCLUDED_SOURCES)
+    )
     news_strategy_profile: str = "short"  # 新闻窗口策略档位：ultra_short/short/medium/long
     news_intel_retention_days: int = 30  # 本地资讯池保留天数
     news_intel_fetch_timeout_sec: float = 8.0  # 单个资讯源拉取超时
@@ -2040,6 +2063,7 @@ class Config:
             social_sentiment_api_key=os.getenv('SOCIAL_SENTIMENT_API_KEY') or None,
             social_sentiment_api_url=os.getenv('SOCIAL_SENTIMENT_API_URL', 'https://api.adanos.org').rstrip('/'),
             news_max_age_days=parse_env_int(os.getenv('NEWS_MAX_AGE_DAYS'), 3, field_name='NEWS_MAX_AGE_DAYS', minimum=1),
+            news_excluded_sources=parse_news_excluded_sources(os.getenv('NEWS_EXCLUDED_SOURCES')),
             news_strategy_profile=cls._parse_news_strategy_profile(
                 os.getenv('NEWS_STRATEGY_PROFILE', 'short')
             ),

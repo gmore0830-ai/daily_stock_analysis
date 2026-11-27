@@ -112,7 +112,7 @@ class TestMarketAnalyzerStrategyPrompt(unittest.TestCase):
 
         prompt = analyzer._build_review_prompt(MarketOverview(date="2026-02-24"), [])
 
-        self.assertIn("# Today's Market Data", prompt)
+        self.assertIn("# Market Data (data date:", prompt)
         self.assertIn("### 1. Market Summary", prompt)
         self.assertIn("A-share Three-Phase Recap Strategy", prompt)
         self.assertNotIn("### 一、市场总结", prompt)

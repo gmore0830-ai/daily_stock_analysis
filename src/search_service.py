@@ -35,6 +35,7 @@ from tenacity import (
 
 from data_provider.us_index_mapping import is_us_index_code
 from src.config import (
+    DEFAULT_NEWS_EXCLUDED_SOURCES,
     NEWS_STRATEGY_WINDOWS,
     normalize_news_strategy_profile,
     resolve_news_window_days,
@@ -47,6 +48,41 @@ from src.data.stock_mapping import (
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 
 logger = logging.getLogger(__name__)
+
+
+def _configured_news_excluded_sources() -> List[str]:
+    try:
+        from src.config import get_config
+
+        return list(get_config().news_excluded_sources or [])
+    except Exception:  # noqa: BLE001 - config unavailable (tests/CLI): use defaults
+        return list(DEFAULT_NEWS_EXCLUDED_SOURCES)
+
+
+def is_excluded_news_source(url: Any, patterns: Optional[List[str]] = None) -> bool:
+    """True when ``url`` matches NEWS_EXCLUDED_SOURCES (forums, video platforms).
+
+    A pattern is ``host`` (matches the host and its subdomains) or ``host/path``
+    (additionally requires the URL path to start with ``/path``).
+    """
+    text = str(url or "").strip()
+    if not text:
+        return False
+    parsed = urlparse(text if "://" in text else f"https://{text}")
+    host = (parsed.netloc or "").lower().split(":")[0]
+    for prefix in ("www.", "m."):
+        host = host.removeprefix(prefix)
+    path = (parsed.path or "/").lower()
+    for pattern in _configured_news_excluded_sources() if patterns is None else patterns:
+        pat_host, _, pat_path = str(pattern or "").strip().lower().partition("/")
+        if not pat_host:
+            continue
+        if host != pat_host and not host.endswith(f".{pat_host}"):
+            continue
+        if pat_path and not path.startswith(f"/{pat_path}"):
+            continue
+        return True
+    return False
 
 _SEARCH_TIMEOUT_PROCESS_START_METHOD = "spawn"
 _SEARCH_TIMEOUT_PROCESS_JOIN_GRACE_SECONDS = 1.0
@@ -3441,7 +3477,11 @@ class SearchService:
         dropped_adult_spam = 0
         dropped_zero_relevance = 0
 
+        dropped_excluded_source = 0
         for item in response.results:
+            if is_excluded_news_source(item.url):
+                dropped_excluded_source += 1
+                continue
             is_official_source = cls._is_trusted_official_news_source(item)
             if (
                 not is_official_source
@@ -3469,14 +3509,15 @@ class SearchService:
         else:
             filtered_results = candidates
 
-        if dropped_low_quality or dropped_adult_spam or dropped_zero_relevance:
+        if dropped_low_quality or dropped_adult_spam or dropped_zero_relevance or dropped_excluded_source:
             logger.info(
-                "[新闻准入] %s: provider=%s, total=%s, kept=%s, "
+                "[新闻准入] %s: provider=%s, total=%s, kept=%s, drop_excluded_source=%s, "
                 "drop_low_quality=%s, drop_adult_spam=%s, drop_zero_relevance=%s",
                 log_scope,
                 response.provider,
                 len(response.results),
                 len(filtered_results),
+                dropped_excluded_source,
                 dropped_low_quality,
                 dropped_adult_spam,
                 dropped_zero_relevance,

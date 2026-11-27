@@ -1559,7 +1559,7 @@ def _market_data(markdown_text: str, generated_on: date) -> MarketPoster:
         _compact_text(item, limit=34)
         for item in (_section_items(catalyst_section, limit=2) or _sentences(catalyst_section, limit=2))
     ]
-    plan_section = _section(markdown_text, "明日交易计划", "strategy plan", "outlook", "내일 거래 계획", "내일 계획")
+    plan_section = _section(markdown_text, "明日交易计划", "交易计划", "strategy plan", "outlook", "내일 거래 계획", "내일 계획")
     poster.focus = _direction_items(
         _labeled_value(plan_section, "关注方向", "focus", "관심 방향", limit=220)
     )
@@ -1728,7 +1728,7 @@ def _should_keep_market_fallback(markdown_text: str, data: MarketPoster) -> bool
             bool(data.catalysts),
         ),
         (
-            _has_meaningful_section(markdown_text, "明日交易计划", "strategy plan", "outlook", "내일 거래 계획", "내일 계획"),
+            _has_meaningful_section(markdown_text, "明日交易计划", "交易计划", "strategy plan", "outlook", "내일 거래 계획", "내일 계획"),
             bool(data.plan),
         ),
         (

@@ -24,10 +24,15 @@ from src.news_registry import get_news_registry, render_inline_citations
 from src.agent.provider_trace import resolved_model_provider_identity
 from src.config import get_config
 from src.report_language import normalize_report_language
-from src.search_service import SearchService
+from src.search_service import SearchService, is_excluded_news_source
 from src.core.market_profile import get_profile, MarketProfile
 from src.core.market_strategy import get_market_strategy_blueprint
-from src.core.trading_calendar import get_market_now
+from src.core.trading_calendar import (
+    build_review_session_context,
+    format_session_label,
+    get_market_now,
+    normalize_bar_date,
+)
 from src.llm.backend_registry import (
     LOCAL_CLI_GENERATION_BACKEND_IDS,
     LITELLM_BACKEND_ID,
@@ -74,6 +79,7 @@ class MarketIndex:
     volume: float = 0.0          # 成交量（手）
     amount: float = 0.0          # 成交额（元）
     amplitude: float = 0.0       # 振幅(%)
+    data_date: str = ""          # 实际资料日期 YYYY-MM-DD（K 线所属交易日，未知为空）
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -88,6 +94,7 @@ class MarketIndex:
             'volume': self.volume,
             'amount': self.amount,
             'amplitude': self.amplitude,
+            'data_date': self.data_date,
         }
 
 
@@ -109,6 +116,13 @@ class MarketOverview:
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
     top_concepts: List[Dict] = field(default_factory=list)    # 涨幅前5概念
     bottom_concepts: List[Dict] = field(default_factory=list) # 跌幅前5概念
+
+    # 资料日期与交易日上下文（见 trading_calendar.build_review_session_context）
+    data_date: str = ""                 # 指数实际资料日期 YYYY-MM-DD
+    session: Dict[str, Any] = field(default_factory=dict)
+
+    # 台股三大法人买卖超（上市 TWSE BFI82U + 上柜 TPEx），单位：元
+    institutional: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -366,6 +380,115 @@ class MarketAnalyzer:
             return f"## {date} 台股大盘复盘"
         return f"## {date} 大盘复盘"
 
+    # ------------------------------------------------------------------
+    # 资料日期 / 休市 / 下一交易日 文案
+    # ------------------------------------------------------------------
+    _SESSION_MARKET_SHORT_ZH = {"us": "美股", "hk": "港股", "jp": "日股", "kr": "韩股", "tw": "台股", "cn": "A股"}
+    _SESSION_MARKET_SHORT_EN = {"us": "US", "hk": "HK", "jp": "Japan", "kr": "Korea", "tw": "Taiwan", "cn": "A-share"}
+
+    @staticmethod
+    def _session_status(overview: "MarketOverview") -> str:
+        return str((overview.session or {}).get("status") or "unknown")
+
+    def _session_data_date(self, overview: "MarketOverview") -> str:
+        return (overview.session or {}).get("data_date") or overview.data_date or ""
+
+    def _session_closed_note(self, overview: "MarketOverview", review_language: str | None = None) -> str:
+        """'11/26（四）感恩节休市，以下为 11/25（三）收盘回顾' when the market was closed since the data."""
+        if self._session_status(overview) != "closed":
+            return ""
+        review_language = review_language or self._get_review_language()
+        closed_days = list((overview.session or {}).get("closed_days") or [])
+        data_date = self._session_data_date(overview)
+        holidays = [d for d in closed_days if not d.get("weekend")]
+        if review_language == "en":
+            if holidays:
+                closed_text = ", ".join(
+                    f"{d['date'][5:].replace('-', '/')}" for d in holidays
+                )
+                closed_text = f"Market closed on {closed_text} (holiday)"
+            else:
+                closed_text = "Market closed for the weekend"
+            return f"{closed_text}; below is a recap of the {data_date[5:].replace('-', '/')} close"
+        if holidays:
+            closed_text = "、".join(f"{format_session_label(d['date'])}{d.get('name') or ''}休市" for d in holidays)
+        else:
+            closed_text = "周末休市"
+        return f"{closed_text}，以下为 {format_session_label(data_date)}收盘回顾"
+
+    def _next_session_label(self, overview: "MarketOverview", review_language: str | None = None) -> str:
+        """'11/27（五）美股半日盘'; '' when the next session is unknown."""
+        session = overview.session or {}
+        next_session = session.get("next_session") or ""
+        if not next_session:
+            return ""
+        review_language = review_language or self._get_review_language()
+        early = bool(session.get("next_session_early_close"))
+        if review_language == "en":
+            market = self._SESSION_MARKET_SHORT_EN.get(self.region, "")
+            label = f"{next_session[5:].replace('-', '/')} {market} session".strip()
+            return f"{label} (early close)" if early else label
+        market = self._SESSION_MARKET_SHORT_ZH.get(self.region, "")
+        return f"{format_session_label(next_session)}{market}{'半日盘' if early else ''}"
+
+    def _get_session_review_title(self, overview: "MarketOverview") -> str:
+        """Review title; a closed market never gets a 'today' style dated title."""
+        if self._session_status(overview) != "closed":
+            return self._get_review_title(overview.date)
+        review_language = self._get_review_language()
+        data_date = self._session_data_date(overview)
+        closed_days = (overview.session or {}).get("closed_days") or []
+        holidays = [d for d in closed_days if not d.get("weekend")]
+        if review_language == "en":
+            market = self._SESSION_MARKET_SHORT_EN.get(self.region, "")
+            return f"## {market} Market Recap | {data_date} close (market closed since)".replace("  ", " ")
+        market = self._SESSION_MARKET_SHORT_ZH.get(self.region, "")
+        if holidays:
+            closed_text = "、".join(f"{format_session_label(d['date'])}{d.get('name') or ''}休市" for d in holidays)
+        else:
+            closed_text = "周末休市"
+        return f"## {market}收盘回顾｜{format_session_label(data_date)}收盘，{closed_text}"
+
+    def _apply_session_wording(self, report: str, overview: "MarketOverview") -> str:
+        """When the market was closed, replace relative 'today' wording with the real data date."""
+        if not report or self._session_status(overview) != "closed":
+            return report
+        data_label = format_session_label(self._session_data_date(overview))
+        if not data_label:
+            return report
+        lines = report.split("\n")
+        for i, line in enumerate(lines):
+            if "](http" in line:  # keep cited news titles verbatim
+                continue
+            for word in ("今日", "今天", "今晚", "昨夜"):
+                line = line.replace(word, data_label)
+            lines[i] = line
+        heading_at = next((i for i, line in enumerate(lines) if line.startswith("## ")), None)
+        if heading_at is not None:
+            # The model may still emit a run-date title; the closed-market title is authoritative.
+            lines[heading_at] = self._get_session_review_title(overview)
+        note = self._session_closed_note(overview)
+        if note and note not in report:
+            insert_at = heading_at + 1 if heading_at is not None else 0
+            lines[insert_at:insert_at] = ["", f"> {note}"]
+        return "\n".join(lines)
+
+    def _build_stale_review(self, overview: "MarketOverview") -> str:
+        """Deterministic notice when the index data is older than the expected session."""
+        session = overview.session or {}
+        data_date = session.get("data_date") or "unknown"
+        expected = session.get("expected_date") or "unknown"
+        if self._get_review_language() == "en":
+            return (
+                f"{self._get_review_title(overview.date)}\n\n"
+                f"> ⚠️ Data not updated: latest index data is {data_date}, expected session {expected}. "
+                "This market is not analyzed in this report."
+            )
+        return (
+            f"{self._get_review_title(overview.date)}\n\n"
+            f"> ⚠️ 资料未更新：最新指数资料日期为 {data_date}，预期交易日为 {expected}，本段不做分析。"
+        )
+
     def _get_index_hint(self) -> str:
         if self._get_review_language() == "en":
             if self.region == "us":
@@ -389,7 +512,7 @@ Assess Taiwan market risk from available TAIEX/TPEx index data and verified news
 ### Strategy Principles
 - Check index coverage before comparing TAIEX and TPEx direction.
 - Distinguish semiconductor heavyweight signals from smaller-company themes.
-- Do not invent institutional flows, breadth, aggregate turnover, or sector rankings.
+- Use institutional flows, breadth, aggregate turnover, and sector rankings only when provided; never invent them.
 
 ### Analysis Dimensions
 - Index Structure: assess trend and divergence only for indices with available data.
@@ -600,6 +723,21 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         
         # 1. 获取主要指数行情（按 region 切换 A 股/美股）
         overview.indices = self._get_main_indices()
+        overview.data_date = self._resolve_overview_data_date(overview.indices)
+        # Real market-local clock: ``now`` may be a naive local time for non-TW regions.
+        overview.session = build_review_session_context(
+            self.region, overview.data_date, now if self.region == "tw" else get_market_now(self.region)
+        )
+        logger.info(
+            "[大盘] %s action=resolve_session data_date=%s expected=%s status=%s closed=%s next=%s early_close=%s",
+            self._log_context(),
+            overview.session.get("data_date") or "unknown",
+            overview.session.get("expected_date") or "unknown",
+            overview.session.get("status"),
+            [d.get("date") for d in overview.session.get("closed_days", [])],
+            overview.session.get("next_session") or "unknown",
+            overview.session.get("next_session_early_close"),
+        )
 
         tw_session = self._tw_session_date(now) if self.region == "tw" else ""
 
@@ -612,6 +750,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         # 3. 获取板块涨跌榜（A 股有，美股暂无；台股为 TWSE 上市类股，无概念榜）
         if self.region == "tw":
             self._get_tw_sector_rankings(overview, tw_session)
+            self._get_tw_institutional(overview, tw_session)
         elif self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
             self._get_concept_rankings(overview)
@@ -646,7 +785,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                         prev_close=item['prev_close'],
                         volume=item['volume'],
                         amount=item['amount'],
-                        amplitude=item['amplitude']
+                        amplitude=item['amplitude'],
+                        data_date=normalize_bar_date(item.get('date')),
                     )
                     indices.append(index)
 
@@ -658,11 +798,42 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     self._log_context(),
                     len(indices),
                 )
+                self._log_index_data_dates(indices)
 
         except Exception as e:
             logger.error("[大盘] %s action=get_main_indices status=failed error=%s", self._log_context(), e)
 
         return indices
+
+    def _log_index_data_dates(self, indices: List[MarketIndex]) -> None:
+        """Log each index's real data date and whether they all share one session."""
+        for idx in indices:
+            logger.info(
+                "[大盘] %s action=index_data_date code=%s name=%s data_date=%s",
+                self._log_context(), idx.code, idx.name, idx.data_date or "unknown",
+            )
+        dates = {idx.data_date for idx in indices if idx.data_date}
+        if len(dates) > 1:
+            logger.warning(
+                "[大盘] %s action=index_data_date status=mismatch dates=%s",
+                self._log_context(),
+                {idx.code: idx.data_date or "unknown" for idx in indices},
+            )
+        elif dates:
+            logger.info(
+                "[大盘] %s action=index_data_date status=consistent data_date=%s codes=%s",
+                self._log_context(), next(iter(dates)), [idx.code for idx in indices if idx.data_date],
+            )
+
+    @staticmethod
+    def _resolve_overview_data_date(indices: List[MarketIndex]) -> str:
+        """Latest data date across the directional indices (VIX only as last resort)."""
+        directional = [
+            idx.data_date for idx in indices
+            if idx.data_date and str(idx.code or "").strip().upper() not in {"VIX", "^VIX"}
+        ]
+        candidates = directional or [idx.data_date for idx in indices if idx.data_date]
+        return max(candidates) if candidates else ""
 
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
@@ -726,6 +897,74 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             self._log_context(), overview.up_count, overview.down_count, overview.flat_count,
             overview.limit_up_count, overview.limit_down_count, overview.total_amount,
         )
+
+    def _get_tw_institutional(self, overview: MarketOverview, date: str) -> None:
+        """三大法人买卖超（上市 TWSE BFI82U + 上柜 TPEx，fail-open）。"""
+        try:
+            from data_provider.tw_market_fetcher import get_tw_market_fetcher
+
+            summary = get_tw_market_fetcher().get_institutional_summary(date)
+        except Exception as exc:  # noqa: BLE001 - never break the review
+            logger.warning("[大盘] %s action=get_institutional status=failed error=%s", self._log_context(), exc)
+            return
+        if not isinstance(summary, dict) or not summary:
+            logger.warning("[大盘] %s action=get_institutional status=empty", self._log_context())
+            return
+        overview.institutional = summary
+        logger.info(
+            "[大盘] %s action=get_institutional status=success date=%s twse_total=%s tpex_total=%s",
+            self._log_context(),
+            summary.get("date"),
+            (summary.get("twse") or {}).get("total"),
+            (summary.get("tpex") or {}).get("total"),
+        )
+
+    @staticmethod
+    def _format_yi(value: Any) -> str:
+        """元 -> signed 亿元 text, e.g. -151.03."""
+        try:
+            return f"{float(value) / 1e8:+.2f}"
+        except (TypeError, ValueError):
+            return "N/A"
+
+    def _institutional_rows(self, overview: MarketOverview) -> List[tuple]:
+        """[(label, foreign, trust, dealer, total)] in 亿元 for 上市 / 上柜."""
+        rows = []
+        for key, label in (("twse", "上市"), ("tpex", "上柜")):
+            data = (overview.institutional or {}).get(key)
+            if data:
+                rows.append((
+                    label,
+                    self._format_yi(data.get("foreign")),
+                    self._format_yi(data.get("trust")),
+                    self._format_yi(data.get("dealer")),
+                    self._format_yi(data.get("total")),
+                ))
+        return rows
+
+    def _build_institutional_block(self, overview: MarketOverview) -> str:
+        rows = self._institutional_rows(overview)
+        if not rows:
+            return ""
+        date = (overview.institutional or {}).get("date") or ""
+        if self._get_review_language() == "en":
+            lines = [
+                f"**Institutional net buy/sell (NT$100m, {date})**",
+                "",
+                "| Market | Foreign | Trust | Dealer | Total |",
+                "|------|------|------|------|------|",
+            ]
+            label_map = {"上市": "TWSE", "上柜": "TPEx"}
+            lines += [f"| {label_map[r[0]]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} |" for r in rows]
+            return "\n".join(lines)
+        lines = [
+            f"**三大法人买卖超（亿元，{date}）**",
+            "",
+            "| 市场 | 外资 | 投信 | 自营商 | 合计 |",
+            "|------|------|------|------|------|",
+        ]
+        lines += [f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} |" for r in rows]
+        return "\n".join(lines)
 
     def _get_tw_sector_rankings(self, overview: MarketOverview, date: str) -> None:
         """上市类股涨跌幅排行（TWSE MI_INDEX IND，fail-open）。"""
@@ -849,7 +1088,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     focus_keywords=query.split()
                 )
                 if response and response.results:
-                    all_news.extend(response.results)
+                    all_news.extend(r for r in response.results if not is_excluded_news_source(r.url))
                     logger.info(
                         "[大盘] %s action=search_market_news status=query_success count=%d",
                         self._log_context(),
@@ -868,6 +1107,23 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return all_news
     
     def generate_market_review(self, overview: MarketOverview, news: List) -> str:
+        """Generate the review, honoring the data-date session context.
+
+        - stale data (older than the expected session): skip the LLM, return a notice
+        - market closed since the data session: closed-market wording, no 'today'
+        """
+        if self._session_status(overview) == "stale":
+            logger.warning(
+                "[大盘] %s action=generate_review status=skipped reason=stale_data data_date=%s expected=%s",
+                self._log_context(),
+                (overview.session or {}).get("data_date"),
+                (overview.session or {}).get("expected_date"),
+            )
+            self._last_review_template_fallback = False
+            return self._build_stale_review(overview)
+        return self._apply_session_wording(self._generate_market_review_body(overview, news), overview)
+
+    def _generate_market_review_body(self, overview: MarketOverview, news: List) -> str:
         """
         使用大模型生成大盘复盘报告
         
@@ -1108,7 +1364,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         """Build the structured market-review contract consumed by API, Web, and notifications."""
         language = self._get_output_language()
         sections = self._split_report_sections(report)
-        title = self._extract_report_title(report) or self._get_review_title(overview.date).lstrip("# ").strip()
+        title = self._extract_report_title(report) or self._get_session_review_title(overview).lstrip("# ").strip()
         light = (
             market_light_snapshot or self.build_market_light_snapshot(overview)
             if self._supports_market_light()
@@ -1305,6 +1561,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _build_stats_block(self, overview: MarketOverview) -> str:
         """Build market statistics block."""
+        institutional_block = self._build_institutional_block(overview)
+        base = self._build_core_stats_block(overview)
+        if institutional_block:
+            return f"{base}\n\n{institutional_block}" if base else institutional_block
+        return base
+
+    def _build_core_stats_block(self, overview: MarketOverview) -> str:
         has_stats = overview.up_count or overview.down_count or overview.total_amount
         has_market_signal = bool(self._supports_market_light() and (overview.indices or has_stats))
         if not has_stats and not has_market_signal:
@@ -1484,6 +1747,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 f"| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额({self._get_turnover_unit_label() if self.region == 'tw' else '亿'}) |",
                 "|------|------|--------|------|------|------|------|-----------|",
             ]
+        data_date = self._session_data_date(overview)
+        if data_date:
+            lines.insert(0, "")
+            lines.insert(
+                0,
+                f"> Data date: {data_date}" if self._get_review_language() == "en" else f"> 资料日期：{data_date}",
+            )
         for idx in overview.indices:
             arrow = self._get_index_change_arrow(idx.change_pct)
             amount_raw = idx.amount or 0.0
@@ -1707,8 +1977,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         label = str(scores["temperature_label"])
         return score, label
 
-    def _build_output_template_sections(self, review_language: str) -> str:
-        """Build LLM output sections according to market data capabilities."""
+    def _build_output_template_sections(self, review_language: str, next_label: str = "") -> str:
+        """Build LLM output sections according to market data capabilities.
+
+        ``next_label`` (e.g. '11/27（五）美股半日盘') replaces the relative '明日' wording.
+        """
+        plan_title = f"交易计划｜{next_label}" if next_label else "明日交易计划"
+        next_text = next_label or "明日"
         if review_language == "en":
             if self.profile.has_market_stats and self.profile.has_sector_rankings:
                 return """### 3. Fund Flows
@@ -1749,16 +2024,16 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             return "\n\n".join(sections)
 
         if self.profile.has_market_stats and self.profile.has_sector_rankings:
-            return """### 三、板块主线
+            return f"""### 三、板块主线
 （区分行业板块与概念题材，分析领涨/领跌背后的逻辑、持续性和是否形成主线）
 
 ### 四、资金与情绪
 （解读成交额、涨跌停结构、市场宽度和风险偏好）
 
 ### 五、消息催化
-（结合近三日新闻，提炼真正影响明日交易的催化或扰动）
+（结合近三日新闻，提炼真正影响{next_text}交易的催化或扰动）
 
-### 六、明日交易计划
+### 六、{plan_title}
 （给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）
 
 ### 七、风险提示
@@ -1779,9 +2054,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             add_section("资金与情绪", "（仅解读已提供的成交额、涨跌停结构、市场宽度和风险偏好数据）")
         add_section(
             "消息催化",
-            "（结合近三日新闻和指数表现，提炼真正影响明日交易的催化或扰动；不要推断未提供的资金流、市场宽度或板块榜）",
+            f"（结合近三日新闻和指数表现，提炼真正影响{next_text}交易的催化或扰动；不要推断未提供的资金流、市场宽度或板块榜）",
         )
-        add_section("明日交易计划", "（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）")
+        add_section(plan_title, "（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）")
         add_section("风险提示", "（列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）")
         return "\n\n".join(sections)
 
@@ -1796,7 +2071,20 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         indices_text = ""
         for idx in overview.indices:
             direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
-            indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
+            date_note = ""
+            if idx.data_date and overview.data_date and idx.data_date != overview.data_date:
+                date_note = (
+                    f" [data date {idx.data_date}, not the latest session]"
+                    if review_language == "en"
+                    else f" [资料日期 {idx.data_date}，非最新交易日]"
+                )
+            indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%){date_note}\n"
+
+        # 资料日期 / 休市 / 下一交易日
+        data_date = self._session_data_date(overview)
+        data_date_display = data_date or overview.date
+        closed_note = self._session_closed_note(overview, review_language)
+        next_label = self._next_session_label(overview, review_language)
         
         # 板块信息
         top_sectors_text = self._format_ranking_summary(overview.top_sectors)
@@ -1866,6 +2154,14 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 上市成交金额: {overview.total_amount:.0f} 亿元（新台币）"""
+            if self.region == "tw" and self._institutional_rows(overview):
+                inst_lines = "\n".join(
+                    f"- {r[0]}：外资 {r[1]} 亿 | 投信 {r[2]} 亿 | 自营商 {r[3]} 亿 | 合计 {r[4]} 亿"
+                    for r in self._institutional_rows(overview)
+                )
+                stats_block = (
+                    f"{stats_block}\n\n## 三大法人买卖超（{(overview.institutional or {}).get('date', '')}，新台币亿元，正为买超）\n{inst_lines}"
+                ).strip()
             elif self.profile.has_market_stats and self.region != "tw":
                 stats_block = f"""## 市场概况
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
@@ -1914,6 +2210,20 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                     "- Cite news with its id at the end of the sentence (e.g. [N3]) and use the news item's own date, "
                     "never the report date; when news is listed above, never claim there was no notable news.\n"
                 )
+            data_boundary_requirement += (
+                f"- Data date: {data_date_display}. The first sentence must state the data date; "
+                "use explicit dates instead of 'today'.\n"
+            )
+            if self._session_status(overview) == "intraday":
+                data_boundary_requirement += (
+                    f"- {data_date_display} is intraday data (session not closed); do not treat it as a closing recap.\n"
+                )
+            if closed_note:
+                data_boundary_requirement += (
+                    f"- Market closed: {closed_note}. Start with exactly this sentence and never call the data 'today'.\n"
+                )
+            if next_label:
+                data_boundary_requirement += f"- Next session: {next_label}; name it explicitly instead of 'tomorrow'.\n"
             market_summary_hint = (
                 "2-3 sentences summarizing overall market tone, index moves, and liquidity."
                 if self.profile.has_market_stats
@@ -1932,17 +2242,43 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                     "- 引用新闻时在句尾标注编号（如 [N3]），日期写新闻本身的发布日，不得套用报告日期；"
                     "上方已列出新闻时，不得写“无重大新闻”“未检索到新闻”。\n"
                 )
+            data_boundary_requirement += (
+                f"- 资料日期：{data_date_display}。复盘第一句必须写出资料日期（例如“{format_session_label(data_date_display) or data_date_display}收盘，……”），"
+                "正文提到行情时一律使用具体日期，不要用“今日”“今天”等相对说法。\n"
+            )
+            if self._session_status(overview) == "intraday":
+                data_boundary_requirement += (
+                    f"- {data_date_display} 为盘中数据（该交易日尚未收盘），只能描述盘中走势，不得当作收盘复盘。\n"
+                )
+            if closed_note:
+                data_boundary_requirement += (
+                    f"- 休市：{closed_note}。第一句必须原样写出“{closed_note}”；"
+                    "标题与正文禁止出现“今日”“今天”“今晚”“昨夜”，所有行情均为上述资料日期的收盘数据，不得描述休市日的走势。\n"
+                )
+            if next_label:
+                data_boundary_requirement += (
+                    f"- 下一交易日为 {next_label}；展望与交易计划请写具体日期“{next_label}”，不要写“明日”。\n"
+                )
             market_summary_hint = (
                 "2-3句话概括指数、涨跌家数、成交额和情绪温度，明确“强势/偏暖/震荡/偏弱”判断"
                 if self.profile.has_market_stats
                 else "2-3句话概括指数表现、新闻线索和整体风险状态，不要补写未提供的市场宽度或资金流数据"
             )
 
-        output_template_sections = self._build_output_template_sections(review_language)
+        output_template_sections = self._build_output_template_sections(review_language, next_label)
         zh_market_scope_name = self._get_market_scope_name("zh")
         zh_report_title = f"{overview.date} 大盘复盘"
         if self.region in ("jp", "kr", "tw"):
             zh_report_title = f"{overview.date} {zh_market_scope_name}大盘复盘"
+        if closed_note:
+            zh_report_title = self._get_session_review_title(overview).removeprefix("## ").strip()
+        if closed_note:
+            first_line_hint = f"第一句原样写“{closed_note}”，再一句给出市场状态、核心矛盾和{next_label or '下一交易日'}优先观察方向。"
+        else:
+            first_line_hint = (
+                f"第一句写出资料日期（{format_session_label(data_date_display) or data_date_display}），"
+                f"再给出市场状态、核心矛盾和{next_label or '下一交易日'}优先观察方向。"
+            )
         workflow_hint = (
             "报告要像交易员盘后工作台：先给结论，再按数据表、主线、催化、计划展开"
             if self.profile.has_market_stats or self.profile.has_sector_rankings
@@ -1950,7 +2286,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         )
 
         if review_language == "en":
-            report_title = self._get_review_title(overview.date).removeprefix("## ").strip()
+            report_title = self._get_session_review_title(overview).removeprefix("## ").strip()
             return f"""You are a professional {self._get_market_scope_name('en')} analyst. Please produce a concise market recap report based on the data below.
 
 [Requirements]
@@ -1963,10 +2299,13 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 
 ---
 
-# Today's Market Data
+# Market Data (data date: {data_date_display})
 
-## Date
+## Report Date
 {overview.date}
+
+## Data Date
+{data_date_display}
 
 ## Major Indices
 {indices_placeholder}
@@ -2017,10 +2356,13 @@ Output the report content directly, no extra commentary.
 
 ---
 
-# 今日市场数据
+# 市场数据（资料日期：{data_date_display}）
 
-## 日期
+## 报告日期
 {overview.date}
+
+## 资料日期
+{data_date_display}
 
 ## 主要指数
 {indices_placeholder}
@@ -2044,7 +2386,7 @@ Output the report content directly, no extra commentary.
 
 ## {zh_report_title}
 
-> 一句话给出今日市场状态、核心矛盾和明日优先观察方向。
+> {first_line_hint}
 
 ### 一、盘面总览
 （{market_summary_hint}）
@@ -2185,7 +2527,7 @@ Market conditions can change quickly. The data above is for reference only and d
             if self.profile.has_market_stats
             else ""
         )
-        return f"""{self._get_review_title(overview.date)}
+        return f"""{self._get_session_review_title(overview)}
 
 > 今日{market_label}市场整体呈现**{market_mood}**态势，优先观察{summary_focus}。
 
@@ -2264,6 +2606,8 @@ Market conditions can change quickly. The data above is for reference only and d
                     continue
                 url = str(item.get("url") or "")
                 if url and url in seen_urls:
+                    continue
+                if is_excluded_news_source(url):
                     continue
                 seen_urls.add(url)
                 merged_local.append({

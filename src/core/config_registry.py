@@ -1368,6 +1368,31 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "NEWS_EXCLUDED_SOURCES": {
+        "title": "Excluded News Sources",
+        "description": "Comma-separated host or host/path prefixes dropped from news context (forums, video platforms). Unset uses the defaults; an empty value disables exclusion.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "cmoney.tw/forum,youtube.com,youtu.be",
+        "options": [],
+        "validation": {},
+        "display_order": 12,
+        "help_key": "settings.data_source.news_window",
+        "examples": [
+            "NEWS_EXCLUDED_SOURCES=cmoney.tw/forum,youtube.com,youtu.be",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：环境变量完整列表",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
     "BIAS_THRESHOLD": {
         "title": "Bias Threshold (%)",
         "description": "Deviation threshold from MA5 (%). Exceeding this triggers 'do not chase' warning. Strong trend stocks auto-widen to 1.5x.",

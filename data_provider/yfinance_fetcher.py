@@ -346,7 +346,17 @@ class YfinanceFetcher(BaseFetcher):
             'volume': float(today_row['Volume']),
             'amount': 0.0,  # Yahoo Finance 不提供准确成交额
             'amplitude': amplitude,
+            # 实际 K 线日期（交易所本地日期），用于识别休市/资料未更新
+            'date': self._bar_date(hist.index[-1]),
         }
+
+    @staticmethod
+    def _bar_date(value: Any) -> str:
+        """Return the bar's exchange-local date as YYYY-MM-DD ('' when unknown)."""
+        try:
+            return value.date().isoformat()
+        except Exception:  # noqa: BLE001 - metadata only, never fail the quote
+            return ""
 
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
         """

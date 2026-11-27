@@ -169,7 +169,6 @@ def _get_market_review_text(language: str) -> dict[str, str]:
             "jp_title": "# Japan Market Recap",
             "kr_title": "# Korea Market Recap",
             "tw_title": "# Taiwan Market Recap",
-            "separator": "> Next market recap follows",
         }
     if normalized == "ko":
         return {
@@ -181,7 +180,6 @@ def _get_market_review_text(language: str) -> dict[str, str]:
             "jp_title": "# 일본 시황 리뷰",
             "kr_title": "# 한국 시황 리뷰",
             "tw_title": "# 대만 시황 리뷰",
-            "separator": "> 다음 시장 시황 리뷰",
         }
     return {
         "root_title": "# 🎯 大盘复盘",
@@ -192,7 +190,6 @@ def _get_market_review_text(language: str) -> dict[str, str]:
         "jp_title": "# 日股大盘复盘",
         "kr_title": "# 韩股大盘复盘",
         "tw_title": "# 台股大盘复盘",
-        "separator": "> 以下为下一市场大盘复盘",
     }
 
 
@@ -317,7 +314,7 @@ def run_market_review(
                 if mkt_report:
                     parts.append(f"{review_text[title_key]}\n\n{mkt_report}")
             if parts:
-                review_report = f"\n\n---\n\n{review_text['separator']}\n\n".join(parts)
+                review_report = "\n\n---\n\n".join(parts)
             else:
                 review_report = None
         else:

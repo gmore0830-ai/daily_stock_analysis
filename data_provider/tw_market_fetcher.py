@@ -7,6 +7,8 @@ Fills what yfinance does not provide for the Taiwan market review:
 * TWSE 加權指數成交金額         -> TWSE MI_INDEX type=MS「大盤統計資訊」總計
 * 上市漲跌家數 / 漲跌停家數      -> TWSE MI_INDEX type=MS「漲跌證券數合計」股票欄
 * 上市類股漲跌幅排行            -> TWSE MI_INDEX type=IND「價格指數(臺灣證券交易所)」類指數
+* 三大法人買賣超（上市）         -> TWSE BFI82U 三大法人買賣金額統計表
+* 三大法人買賣超（上櫃）         -> TPEx insti/summary 三大法人買賣金額彙總表
 
 Every public method returns ``None`` / empty on any error so the review never fails
 because an exchange endpoint is slow or changed (verified live 2026-11-26).
@@ -27,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 _TWSE_MI_INDEX = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
 _TPEX_INDEX = "https://www.tpex.org.tw/openapi/v1/tpex_index"
+_TWSE_BFI82U = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
+_TPEX_INSTI_SUMMARY = "https://www.tpex.org.tw/www/zh-tw/insti/summary"
 _HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 # Aggregate groupings in the TWSE sector table; ranking uses the leaf sectors only.
@@ -212,6 +216,75 @@ class TwMarketFetcher:
         except Exception as exc:  # noqa: BLE001
             logger.info("[tw-market] TWSE sector fetch failed: %s", exc)
             return [], []
+
+    # ------------------------------------------------ 三大法人 market totals
+    def get_institutional_summary(self, date: Optional[str] = None) -> Dict[str, Any]:
+        """三大法人買賣超 for 上市 (TWSE) and 上櫃 (TPEx), in 元.
+
+        Returns ``{"date": "YYYY-MM-DD", "twse": {...}, "tpex": {...}}`` where each
+        market dict has ``foreign`` / ``trust`` / ``dealer`` / ``total`` net amounts.
+        A market whose source fails or reports another date is omitted; {} when both fail.
+        """
+        ad_date = self._norm_date(date)
+        out: Dict[str, Any] = {}
+        twse = self._twse_institutional(ad_date)
+        if twse:
+            out["twse"] = twse
+        tpex = self._tpex_institutional(ad_date)
+        if tpex:
+            out["tpex"] = tpex
+        if out:
+            out["date"] = f"{ad_date[:4]}-{ad_date[4:6]}-{ad_date[6:]}"
+        return out
+
+    def _twse_institutional(self, ad_date: str) -> Dict[str, float]:
+        try:
+            payload = self._get_json(_TWSE_BFI82U, {"response": "json", "type": "day", "dayDate": ad_date})
+            if not isinstance(payload, dict) or payload.get("stat") != "OK":
+                return {}
+            if str(payload.get("date") or "") != ad_date:
+                logger.info("[tw-market] TWSE BFI82U date mismatch: %s != %s", payload.get("date"), ad_date)
+                return {}
+            rows = {str(r[0]).strip(): _num(r[3]) for r in payload.get("data") or [] if r and len(r) >= 4}
+            dealer = (rows.get("自營商(自行買賣)") or 0.0) + (rows.get("自營商(避險)") or 0.0)
+            foreign = (rows.get("外資及陸資(不含外資自營商)") or 0.0) + (rows.get("外資自營商") or 0.0)
+            total = rows.get("合計")
+            if total is None:
+                return {}
+            return {"foreign": foreign, "trust": rows.get("投信") or 0.0, "dealer": dealer, "total": total}
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.info("[tw-market] TWSE institutional fetch failed: %s", exc)
+            return {}
+
+    def _tpex_institutional(self, ad_date: str) -> Dict[str, float]:
+        try:
+            query_date = f"{ad_date[:4]}/{ad_date[4:6]}/{ad_date[6:]}"
+            payload = self._get_json(_TPEX_INSTI_SUMMARY, {"type": "Daily", "date": query_date, "response": "json"})
+            tables = payload.get("tables") if isinstance(payload, dict) else None
+            table = next((t for t in tables or [] if isinstance(t, dict) and t.get("data")), None)
+            if not table:
+                return {}
+            minguo = str(table.get("date") or "").replace("/", "")
+            if len(minguo) == 7 and minguo.isdigit() and f"{int(minguo[:3]) + 1911}{minguo[3:]}" != ad_date:
+                logger.info("[tw-market] TPEx institutional date mismatch: %s != %s", table.get("date"), ad_date)
+                return {}
+            rows = {
+                str(r[0]).replace("　", "").replace("*", "").strip(): _num(r[3])
+                for r in table.get("data") or []
+                if r and len(r) >= 4
+            }
+            total = rows.get("三大法人合計")
+            if total is None:
+                return {}
+            return {
+                "foreign": rows.get("外資及陸資合計") or 0.0,
+                "trust": rows.get("投信") or 0.0,
+                "dealer": rows.get("自營商合計") or 0.0,
+                "total": total,
+            }
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.info("[tw-market] TPEx institutional fetch failed: %s", exc)
+            return {}
 
 
 _SHARED: Optional[TwMarketFetcher] = None
