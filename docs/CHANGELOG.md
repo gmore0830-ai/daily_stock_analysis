@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [改进] 大盘复盘交易日筛选：当地当天休市的市场不再静默消失，改为在复盘中写一行「台股 10/9（五）国庆日休市，本次无新交易资料」；前一交易时段在 16 小时内收盘、尚未复盘过的市场（如台北 11/26 看感恩节前一晚的美股收盘）会照常复盘。
 - [改进] 大盘复盘标题改用资料日期与市场名称（如「11/27（五）美股大盘复盘」，盘中为「盘中复盘」），并统一覆盖模型自拟的标题。
-- [改进] `NEWS_EXCLUDED_SOURCES` 默认值新增 `google.com/finance`（行情报价页不作为新闻依据）。
+- [改进] `NEWS_EXCLUDED_SOURCES` 默认值新增行情报价页（`google.com/finance`、`tw.stock.yahoo.com/quote`、`tw.stock.yahoo.com/class-quote`）与社群来源（`instagram.com`、`facebook.com`、`threads.net`/`threads.com`、`moomoo.com/community`）；host/path 规则改为路径段连续匹配，可命中带语系前缀的网址（如 `/hans/community/...`）。
 - [修复] 台股加权指数：yfinance `^TWII` 仍停在前一交易日（如 11/27 盘后仍为 11/26、+0.00%）时，改用 TWSE 官方 MI_5MINS_HIST 收盘；成交额按该 K 线日期抓取，周末/假日不再缺值；指数表格对资料日期落后的指数标注实际日期。
 - [修复] 每日 Actions 繁体转换修正「迴顧」为「回顧」。
 - [修复] 大盘复盘按指数实际资料日期判断交易日：美股感恩节等休市日只输出「休市，以下为 X 收盘回顾」，标题与正文不再使用「今日」；资料早于预期交易日时标记「资料未更新」且不送 LLM 分析；日志逐一输出各指数（含 VIX）资料日期并提示不一致。

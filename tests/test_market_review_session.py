@@ -386,3 +386,23 @@ def test_google_finance_quote_pages_are_excluded_by_default():
     patterns = parse_news_excluded_sources(None)
     assert is_excluded_news_source("https://www.google.com/finance/beta?hl=ZH-cn", patterns)
     assert not is_excluded_news_source("https://www.google.com/search?q=stocks", patterns)
+
+
+@pytest.mark.parametrize(
+    "url,excluded",
+    [
+        ("https://www.instagram.com/p/DgQQhWlGxVa", True),
+        ("https://m.facebook.com/story.php?id=1", True),
+        ("https://www.threads.net/@x/post/1", True),
+        ("https://www.moomoo.com/hans/community/feed/pre-market-117688766103957", True),
+        ("https://www.moomoo.com/community/feed/dow-117689705299973", True),
+        ("https://www.moomoo.com/news/post/123", False),
+        ("https://tw.stock.yahoo.com/class-quote?sectorId=40&exchange=TAI", True),
+        ("https://tw.stock.yahoo.com/quote/2330.TW", True),
+        ("https://tw.stock.yahoo.com/news/台積電-210530975.html", False),
+        ("https://www.cmoney.tw/forum/stock/2330", True),
+        ("https://www.cmoney.tw/forumx/1", False),
+    ],
+)
+def test_default_excluded_sources_cover_social_and_quote_pages(url, excluded):
+    assert is_excluded_news_source(url, parse_news_excluded_sources(None)) == excluded

@@ -60,10 +60,11 @@ def _configured_news_excluded_sources() -> List[str]:
 
 
 def is_excluded_news_source(url: Any, patterns: Optional[List[str]] = None) -> bool:
-    """True when ``url`` matches NEWS_EXCLUDED_SOURCES (forums, video platforms).
+    """True when ``url`` matches NEWS_EXCLUDED_SOURCES (forums, social, video, quote pages).
 
     A pattern is ``host`` (matches the host and its subdomains) or ``host/path``
-    (additionally requires the URL path to start with ``/path``).
+    (additionally requires the path segments to appear contiguously in the URL
+    path, so ``moomoo.com/community`` also matches ``/hans/community/feed/...``).
     """
     text = str(url or "").strip()
     if not text:
@@ -72,14 +73,18 @@ def is_excluded_news_source(url: Any, patterns: Optional[List[str]] = None) -> b
     host = (parsed.netloc or "").lower().split(":")[0]
     for prefix in ("www.", "m."):
         host = host.removeprefix(prefix)
-    path = (parsed.path or "/").lower()
+    segments = [seg for seg in (parsed.path or "").lower().split("/") if seg]
     for pattern in _configured_news_excluded_sources() if patterns is None else patterns:
         pat_host, _, pat_path = str(pattern or "").strip().lower().partition("/")
         if not pat_host:
             continue
         if host != pat_host and not host.endswith(f".{pat_host}"):
             continue
-        if pat_path and not path.startswith(f"/{pat_path}"):
+        pat_segments = [seg for seg in pat_path.split("/") if seg]
+        if pat_segments and not any(
+            segments[i:i + len(pat_segments)] == pat_segments
+            for i in range(len(segments) - len(pat_segments) + 1)
+        ):
             continue
         return True
     return False
