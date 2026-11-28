@@ -1377,13 +1377,13 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "cmoney.tw/forum,youtube.com,youtu.be",
+        "default_value": "cmoney.tw/forum,youtube.com,youtu.be,google.com/finance",
         "options": [],
         "validation": {},
         "display_order": 12,
         "help_key": "settings.data_source.news_window",
         "examples": [
-            "NEWS_EXCLUDED_SOURCES=cmoney.tw/forum,youtube.com,youtu.be",
+            "NEWS_EXCLUDED_SOURCES=cmoney.tw/forum,youtube.com,youtu.be,google.com/finance",
         ],
         "docs": [
             {

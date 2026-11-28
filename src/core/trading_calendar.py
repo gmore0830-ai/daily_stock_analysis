@@ -834,3 +834,78 @@ def build_review_session_context(
         logger.warning("trading_calendar.build_review_session_context fail-open: %s", exc)
         context["status"] = "unknown"
         return context
+
+
+_MARKET_NAME_ZH = {"cn": "A股", "hk": "港股", "us": "美股", "jp": "日股", "kr": "韩股", "tw": "台股"}
+
+# A completed session that closed within this window has not been reviewed yet:
+# a 16:45 Taipei run on a US holiday still owes readers last night's US close
+# (closed ~12-15h earlier), while a Saturday-morning run must not repeat
+# Friday's Taiwan close (~19h earlier, already reviewed on Friday).
+_REVIEW_FRESH_SESSION_HOURS = 16
+
+
+def _latest_completed_session_close(market: str, current_time: Optional[datetime] = None) -> Optional[datetime]:
+    """UTC close time of the latest completed session, or None when unknown."""
+    if not _XCALS_AVAILABLE or market not in MARKET_EXCHANGE:
+        return None
+    try:
+        market_now = get_market_now(market, current_time=current_time)
+        session = get_effective_trading_date(market, current_time=market_now)
+        close = xcals.get_calendar(MARKET_EXCHANGE[market]).session_close(pd.Timestamp(session))
+        return close.to_pydatetime()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("trading_calendar.latest_session_close unavailable for %s: %s", market, exc)
+        return None
+
+
+def get_recently_closed_review_markets(current_time: Optional[datetime] = None) -> Set[str]:
+    """Markets whose latest completed session closed within the fresh window."""
+    if not _XCALS_AVAILABLE:
+        return set()
+    now_utc = current_time or datetime.now(ZoneInfo("UTC"))
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.astimezone()
+    now_utc = now_utc.astimezone(ZoneInfo("UTC"))
+    result: Set[str] = set()
+    for mkt in MARKET_TIMEZONE:
+        close = _latest_completed_session_close(mkt, now_utc)
+        if close is not None and timedelta(0) <= now_utc - close <= timedelta(hours=_REVIEW_FRESH_SESSION_HOURS):
+            result.add(mkt)
+    return result
+
+
+def get_market_review_markets_today(current_time: Optional[datetime] = None) -> Set[str]:
+    """Markets worth reviewing now: open today, or a session closed within the fresh window.
+
+    Unlike ``get_open_markets_today`` (used for per-stock filtering), a market closed
+    today whose previous session has not been reviewed yet stays in the review.
+    """
+    if current_time is None:
+        open_markets = get_open_markets_today()
+    else:
+        open_markets = {
+            mkt for mkt in MARKET_TIMEZONE
+            if is_market_open(mkt, get_market_now(mkt, current_time=current_time).date())
+        }
+    return set(open_markets) | get_recently_closed_review_markets(current_time)
+
+
+def build_market_closed_today_note(market: str, current_time: Optional[datetime] = None) -> str:
+    """'台股 11/28（六）周末休市，本次无新交易资料' for a market skipped by the review."""
+    name = _MARKET_NAME_ZH.get(market, market.upper())
+    market_now = get_market_now(market, current_time=current_time)
+    local_today = market_now.date()
+    label = format_session_label(local_today)
+    reason = "周末休市" if local_today.weekday() >= 5 else "休市"
+    if reason == "休市" and _XCALS_AVAILABLE and market in MARKET_EXCHANGE:
+        try:
+            named = xcals.get_calendar(MARKET_EXCHANGE[market]).regular_holidays.holidays(
+                local_today, local_today, return_name=True
+            )
+            holiday = _holiday_name_zh(next(iter(named.values), "")) if len(named) else ""
+            if holiday:
+                reason = f"{holiday}休市"
+        except Exception:  # noqa: BLE001 - name is cosmetic
+            pass
+    return f"{name} {label}{reason}，本次无新交易资料"

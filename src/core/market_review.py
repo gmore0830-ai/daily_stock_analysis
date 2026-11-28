@@ -96,6 +96,17 @@ def _clear_run_scoped_reviews() -> None:
         _RUN_SCOPED_REVIEWS.clear()
 
 
+# Markets dropped by the trading-day filter for this run -> one-line closed note,
+# so a closed market is stated explicitly instead of silently disappearing.
+_CLOSED_MARKET_NOTES: Dict[str, str] = {}
+
+
+def set_closed_market_notes(notes: Optional[Dict[str, str]]) -> None:
+    """Record closed-market notes for the current CLI run (empty/None clears)."""
+    _CLOSED_MARKET_NOTES.clear()
+    _CLOSED_MARKET_NOTES.update({k: v for k, v in (notes or {}).items() if v})
+
+
 @dataclass
 class MarketReviewRunResult:
     """Structured result for API/Web consumers while keeping Markdown compatibility."""
@@ -266,13 +277,28 @@ def run_market_review(
         persist_region,
     )
 
+    closed_notes = {
+        mkt: note for mkt, note in _CLOSED_MARKET_NOTES.items() if mkt not in run_markets
+    }
     try:
-        if len(run_markets) > 1:
-            # 多市场顺序执行，合并报告
+        if len(run_markets) > 1 or closed_notes:
+            # 多市场顺序执行，合并报告（休市市场只放一行说明）
             parts = []
             market_light_snapshots: Dict[str, Dict[str, Any]] = {}
             market_review_payloads: Dict[str, Dict[str, Any]] = {}
             for mkt, title_key, label in _MARKET_REVIEW_MARKETS:
+                if mkt in closed_notes:
+                    note_md = f"> 📌 {closed_notes[mkt]}"
+                    parts.append(f"{review_text[title_key]}\n\n{note_md}")
+                    market_review_payloads[mkt] = _coerce_market_review_payload(
+                        None, region=mkt, report=note_md
+                    )
+                    logger.info(
+                        "[MarketReview] component=market_review action=closed_note region=%s note=%s",
+                        mkt,
+                        closed_notes[mkt],
+                    )
+                    continue
                 if mkt not in run_markets:
                     continue
                 logger.info(

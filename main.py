@@ -499,6 +499,33 @@ def _startup_config_warnings(config: Config, args: argparse.Namespace) -> List[s
     ]
 
 
+def _resolve_review_region_with_closed_notes(config: Any) -> str:
+    """Market-review region for this run, recording closed-market notes for the rest.
+
+    A market stays in the review when it trades today or its last session closed
+    within the past day (e.g. a US holiday still owes last night's US close).
+    Markets dropped here get a one-line closed note in the review instead of
+    silently disappearing.
+    """
+    from src.core.market_review import set_closed_market_notes
+    from src.core.trading_calendar import (
+        build_market_closed_today_note,
+        compute_effective_region,
+        get_market_review_markets_today,
+    )
+    from src.utils.market_review_region import normalize_market_review_region_lenient
+
+    configured = getattr(config, 'market_review_region', 'cn') or 'cn'
+    effective_region = compute_effective_region(configured, get_market_review_markets_today())
+    requested = (normalize_market_review_region_lenient(configured) or 'cn').split(',')
+    kept = set((effective_region or '').split(',')) if effective_region else set()
+    notes = {mkt: build_market_closed_today_note(mkt) for mkt in requested if mkt not in kept}
+    set_closed_market_notes(notes if effective_region else None)
+    if notes:
+        logger.info("大盘复盘休市市场: %s", notes)
+    return effective_region
+
+
 def _compute_trading_day_filter(
     config: Config,
     args: argparse.Namespace,
@@ -540,9 +567,7 @@ def _compute_trading_day_filter(
             filtered_codes.append(code)
 
     if config.market_review_enabled and not getattr(args, 'no_market_review', False):
-        effective_region = compute_effective_region(
-            getattr(config, 'market_review_region', 'cn') or 'cn', open_markets
-        )
+        effective_region = _resolve_review_region_with_closed_notes(config)
     else:
         effective_region = None
 
@@ -1933,11 +1958,7 @@ def main() -> int:
             # explicit --market-review invocation when the flag is disabled.
             effective_region = None
             if not getattr(args, 'force_run', False) and getattr(config, 'trading_day_check_enabled', True):
-                from src.core.trading_calendar import get_open_markets_today, compute_effective_region as _compute_region
-                open_markets = get_open_markets_today()
-                effective_region = _compute_region(
-                    getattr(config, 'market_review_region', 'cn') or 'cn', open_markets
-                )
+                effective_region = _resolve_review_region_with_closed_notes(config)
                 if effective_region == '':
                     logger.info("今日大盘复盘相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。")
                     return 0

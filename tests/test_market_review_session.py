@@ -294,3 +294,95 @@ def test_index_table_labels_lagging_index():
     block = _analyzer(region="tw")._build_indices_block(overview)
     assert "TWII（资料日期 2026-11-26）" in block
     assert "TWOII（资料日期" not in block
+
+
+# --------------------------------------------------------------- closed-today markets
+
+
+@needs_calendar
+@pytest.mark.real_review_freshness
+@pytest.mark.parametrize(
+    "run_at,expect_tw,expect_us",
+    [
+        ("2026-11-26 16:45", True, True),    # US Thanksgiving: 11/25 close still owed
+        ("2026-11-28 08:20", False, True),   # Saturday: Friday TW close already reviewed
+        ("2026-10-09 16:45", False, True),   # TW National Day: TW closed today
+        ("2026-12-25 16:45", False, True),   # Christmas: US 12/24 half-day close still owed
+    ],
+)
+def test_review_markets_keep_unreviewed_recent_sessions(run_at, expect_tw, expect_us):
+    from src.core.trading_calendar import get_market_review_markets_today
+
+    now = datetime.fromisoformat(run_at).replace(tzinfo=TAIPEI)
+    markets = get_market_review_markets_today(now)
+    assert ("tw" in markets) == expect_tw
+    assert ("us" in markets) == expect_us
+
+
+@needs_calendar
+def test_closed_today_note_names_holiday_or_weekend():
+    from src.core.trading_calendar import build_market_closed_today_note
+
+    assert build_market_closed_today_note("tw", datetime(2026, 10, 9, 16, 45, tzinfo=TAIPEI)) == (
+        "台股 10/9（五）国庆日休市，本次无新交易资料"
+    )
+    assert build_market_closed_today_note("tw", datetime(2026, 11, 28, 8, 20, tzinfo=TAIPEI)) == (
+        "台股 11/28（六）周末休市，本次无新交易资料"
+    )
+
+
+def test_main_records_notes_for_dropped_markets():
+    import main as main_module
+    from src.core import market_review
+
+    config = Config(market_review_region="tw,us")
+    with patch("src.core.trading_calendar.get_market_review_markets_today", return_value={"us"}), patch(
+        "src.core.trading_calendar.build_market_closed_today_note", side_effect=lambda m: f"{m} closed"
+    ):
+        region = main_module._resolve_review_region_with_closed_notes(config)
+    assert region == "us"
+    assert market_review._CLOSED_MARKET_NOTES == {"tw": "tw closed"}
+
+
+def test_single_market_review_still_states_closed_market():
+    from types import SimpleNamespace
+
+    from src.core import market_review
+
+    notifier = MagicMock()
+    notifier.save_report_to_file.return_value = "/tmp/market_review.md"
+    us = MagicMock()
+    us.run_daily_review_with_snapshot.return_value = SimpleNamespace(report="US body", market_light_snapshot=None)
+    market_review.set_closed_market_notes({"tw": "台股 10/9（五）国庆日休市，本次无新交易资料"})
+    with patch.object(
+        market_review, "get_config", return_value=SimpleNamespace(report_language="zh", market_review_region="tw,us")
+    ), patch.object(market_review, "MarketAnalyzer", return_value=us), patch.object(
+        market_review, "_persist_market_review_history"
+    ):
+        result = market_review.run_market_review(notifier, send_notification=False, override_region="us")
+    assert "# 美股大盘复盘\n\nUS body" in result
+    assert "# 台股大盘复盘\n\n> 📌 台股 10/9（五）国庆日休市，本次无新交易资料" in result
+    saved = notifier.save_report_to_file.call_args.args[0]
+    assert "国庆日休市" in saved
+
+
+# --------------------------------------------------------------- titles & sources
+
+
+def test_normal_and_intraday_titles_use_data_session():
+    overview = _closed_overview()
+    overview.session = {**overview.session, "status": "normal", "closed_days": [], "data_date": "2026-11-27"}
+    analyzer = _analyzer()
+    assert analyzer._get_session_review_title(overview) == "## 11/27（五）美股大盘复盘"
+    fixed = analyzer._apply_session_wording("## 📊 2026-11-28 大盘复盘\n\n正文", overview)
+    assert fixed.startswith("## 11/27（五）美股大盘复盘\n")
+    overview.session["status"] = "intraday"
+    assert analyzer._get_session_review_title(overview) == "## 11/27（五）美股盘中复盘"
+    overview.session["status"] = "stale"
+    assert analyzer._get_session_review_title(overview) == analyzer._get_review_title(overview.date)
+
+
+def test_google_finance_quote_pages_are_excluded_by_default():
+    patterns = parse_news_excluded_sources(None)
+    assert is_excluded_news_source("https://www.google.com/finance/beta?hl=ZH-cn", patterns)
+    assert not is_excluded_news_source("https://www.google.com/search?q=stocks", patterns)

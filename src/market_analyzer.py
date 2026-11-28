@@ -432,11 +432,24 @@ class MarketAnalyzer:
         return f"{format_session_label(next_session)}{market}{'半日盘' if early else ''}"
 
     def _get_session_review_title(self, overview: "MarketOverview") -> str:
-        """Review title; a closed market never gets a 'today' style dated title."""
-        if self._session_status(overview) != "closed":
-            return self._get_review_title(overview.date)
+        """Review title named after the data session, e.g. '11/27（五）美股大盘复盘'.
+
+        A closed market never gets a 'today' style title; without a known data date
+        (or with stale data) the legacy run-date title is kept.
+        """
+        status = self._session_status(overview)
         review_language = self._get_review_language()
         data_date = self._session_data_date(overview)
+        if status in ("normal", "intraday") and data_date:
+            if review_language == "en":
+                market = self._SESSION_MARKET_SHORT_EN.get(self.region, "")
+                kind = "Intraday Recap" if status == "intraday" else "Market Recap"
+                return f"## {data_date[5:].replace('-', '/')} {market} {kind}".replace("  ", " ")
+            market = self._SESSION_MARKET_SHORT_ZH.get(self.region, "")
+            kind = "盘中复盘" if status == "intraday" else "大盘复盘"
+            return f"## {format_session_label(data_date)}{market}{kind}"
+        if status != "closed":
+            return self._get_review_title(overview.date)
         closed_days = (overview.session or {}).get("closed_days") or []
         holidays = [d for d in closed_days if not d.get("weekend")]
         if review_language == "en":
@@ -450,13 +463,18 @@ class MarketAnalyzer:
         return f"## {market}收盘回顾｜{format_session_label(data_date)}收盘，{closed_text}"
 
     def _apply_session_wording(self, report: str, overview: "MarketOverview") -> str:
-        """When the market was closed, replace relative 'today' wording with the real data date."""
-        if not report or self._session_status(overview) != "closed":
-            return report
+        """Enforce the data-session title; for a closed market also drop 'today' wording."""
+        status = self._session_status(overview)
         data_label = format_session_label(self._session_data_date(overview))
-        if not data_label:
+        if not report or not data_label or status not in ("closed", "normal", "intraday"):
             return report
         lines = report.split("\n")
+        if status != "closed":
+            heading_at = next((i for i, line in enumerate(lines) if line.startswith("## ")), None)
+            if heading_at is not None:
+                # The model may emit the run date (or an emoji) as title; keep it consistent.
+                lines[heading_at] = self._get_session_review_title(overview)
+            return "\n".join(lines)
         for i, line in enumerate(lines):
             if "](http" in line:  # keep cited news titles verbatim
                 continue
@@ -2278,7 +2296,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         zh_report_title = f"{overview.date} 大盘复盘"
         if self.region in ("jp", "kr", "tw"):
             zh_report_title = f"{overview.date} {zh_market_scope_name}大盘复盘"
-        if closed_note:
+        if self._session_status(overview) in ("closed", "normal", "intraday") and data_date:
             zh_report_title = self._get_session_review_title(overview).removeprefix("## ").strip()
         if closed_note:
             first_line_hint = f"第一句原样写“{closed_note}”，再一句给出市场状态、核心矛盾和{next_label or '下一交易日'}优先观察方向。"

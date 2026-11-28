@@ -249,3 +249,33 @@ class _ThreadlessTestClient:
 
 fastapi.testclient.TestClient = _ThreadlessTestClient
 starlette.testclient.TestClient = _ThreadlessTestClient
+
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _deterministic_market_review_regions(request):
+    """Keep market-review region selection independent of the wall clock.
+
+    ``get_recently_closed_review_markets`` depends on the real current time; tests
+    that exercise it pass ``current_time`` explicitly and opt in with the
+    ``real_review_freshness`` marker. Closed-market notes are cleared per test.
+    """
+    from unittest.mock import patch as _patch
+
+    from src.core import market_review as _market_review
+
+    _market_review.set_closed_market_notes(None)
+    if request.node.get_closest_marker("real_review_freshness"):
+        yield
+    else:
+        with _patch("src.core.trading_calendar.get_recently_closed_review_markets", return_value=set()):
+            yield
+    _market_review.set_closed_market_notes(None)
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "real_review_freshness: use the real recently-closed review market check"
+    )

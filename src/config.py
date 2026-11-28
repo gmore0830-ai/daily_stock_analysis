@@ -338,7 +338,7 @@ def normalize_news_strategy_profile(value: Optional[str]) -> str:
     return candidate if candidate in NEWS_STRATEGY_WINDOWS else "short"
 
 
-DEFAULT_NEWS_EXCLUDED_SOURCES = ("cmoney.tw/forum", "youtube.com", "youtu.be")
+DEFAULT_NEWS_EXCLUDED_SOURCES = ("cmoney.tw/forum", "youtube.com", "youtu.be", "google.com/finance")
 
 
 def parse_news_excluded_sources(raw: Optional[str]) -> List[str]:
